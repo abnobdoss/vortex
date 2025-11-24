@@ -12,6 +12,7 @@ use vortex_dtype::DType;
 use vortex_error::VortexError;
 use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
+#[cfg(not(target_arch = "wasm32"))]
 use vortex_io::InstrumentedReadAt;
 use vortex_io::VortexReadAt;
 use vortex_io::session::RuntimeSessionExt;
@@ -162,10 +163,15 @@ impl VortexOpenOptions {
     }
 
     /// An API for opening a [`VortexFile`] using any [`VortexReadAt`] implementation.
-    ///
+    ///1
     /// This is a low-level API and we strongly recommend using [`VortexOpenOptions::open`].
-    async fn open_read<R: VortexReadAt>(self, read: R) -> VortexResult<VortexFile> {
-        let read = Arc::new(InstrumentedReadAt::new(Arc::new(read), &self.metrics));
+    pub async fn open_read<R: VortexReadAt>(self, read: R) -> VortexResult<VortexFile> {
+        // On WASM, skip instrumentation because it uses std::time which is not available.
+        #[cfg(target_arch = "wasm32")]
+        let read: Arc<dyn VortexReadAt> = Arc::new(read);
+        #[cfg(not(target_arch = "wasm32"))]
+        let read: Arc<dyn VortexReadAt> =
+            Arc::new(InstrumentedReadAt::new(Arc::new(read), &self.metrics));
 
         let footer = if let Some(footer) = self.footer {
             footer

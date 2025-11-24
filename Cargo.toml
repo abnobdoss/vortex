@@ -32,6 +32,9 @@ members = [
     "vortex-jni",
     "vortex-python",
     "vortex-tui",
+    "vortex-utils",
+    "vortex-vector",
+    "vortex-wasm",
     "xtask",
     # Encodings
     "encodings/fastlanes",
@@ -141,6 +144,7 @@ glob = "0.3.2"
 goldenfile = "1"
 half = { version = "2.7.1", features = ["std", "num-traits"] }
 hashbrown = "0.16.1"
+hex = "0.4"
 humansize = "2.1.3"
 indicatif = "0.18.0"
 insta = "1.43"
@@ -170,6 +174,7 @@ parking_lot = { version = "0.12.3", features = ["nightly"] }
 parquet = "57.1"
 paste = "1.0.15"
 pco = "0.4.4"
+phf = { version = "0.13", features = ["macros"] }
 pin-project-lite = "0.2.15"
 primitive-types = { version = "0.14.0" }
 prost = "0.14"
@@ -265,6 +270,7 @@ vortex-session = { version = "0.1.0", path = "./vortex-session", default-feature
 vortex-sparse = { version = "0.1.0", path = "./encodings/sparse", default-features = false }
 vortex-utils = { version = "0.1.0", path = "./vortex-utils", default-features = false }
 vortex-vector = { version = "0.1.0", path = "./vortex-vector", default-features = false }
+vortex-wasm = { version = "0.1.0", path = "./vortex-wasm", default-features = false }
 vortex-zigzag = { version = "0.1.0", path = "./encodings/zigzag", default-features = false }
 vortex-zstd = { version = "0.1.0", path = "./encodings/zstd", default-features = false }
 # END crates published by this project

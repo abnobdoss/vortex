@@ -247,4 +247,4 @@ jobs:
         if: inputs.mode == 'develop'
         shell: bash
         run: |
-          bash scripts/cat-s3.sh vortex-benchmark-results-database data.json.gz results.json
+          target/release_debug/s3_cat vortex-benchmark-results-database-test data.json.gz results.json

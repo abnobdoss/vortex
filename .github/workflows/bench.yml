@@ -17,6 +17,11 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-rust
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build s3_cat binary
+        run: cargo build --bin s3_cat --package bench-vortex --release
       - name: Setup AWS CLI
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -29,7 +34,7 @@ jobs:
 
           sudo apt-get update && sudo apt-get install -y jq
           bash scripts/commit-json.sh > new-commit.json
-          bash scripts/cat-s3.sh vortex-benchmark-results-database commits.json new-commit.json
+          target/release/s3_cat vortex-benchmark-results-database-test commits.json new-commit.json
 
   bench:
     timeout-minutes: 120

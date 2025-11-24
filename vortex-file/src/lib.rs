@@ -100,6 +100,9 @@ pub mod segments;
 mod strategy;
 #[cfg(test)]
 mod tests;
+// The update module uses blocking runtimes that are not available in WASM.
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
 mod writer;
 
 pub use file::*;
@@ -107,6 +110,8 @@ pub use footer::*;
 pub use forever_constant::*;
 pub use open::*;
 pub use strategy::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub use update::*;
 use vortex_alp::ALPRDVTable;
 use vortex_alp::ALPVTable;
 use vortex_array::arrays::DictVTable;

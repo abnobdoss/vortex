@@ -56,6 +56,11 @@ vortex-utils = { workspace = true, features = ["dashmap"] }
 vortex-zigzag = { workspace = true }
 vortex-zstd = { workspace = true, optional = true }
 
+# async-fs uses std::time which is not available on WASM. It's only used in update.rs which is
+# already feature-gated for non-WASM.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-fs = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 vortex-array = { workspace = true, features = ["_test-harness"] }
