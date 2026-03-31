@@ -10533,6 +10533,7 @@ dependencies = [
 name = "vortex-ffi"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 58.0.0",
  "async-fs",
  "cbindgen",
  "futures",

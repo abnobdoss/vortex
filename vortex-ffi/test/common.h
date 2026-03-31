@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 #pragma once
-
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 #include "vortex.h"

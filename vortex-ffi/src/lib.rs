@@ -9,6 +9,7 @@
 mod array;
 mod array_iterator;
 mod binary;
+mod data_source;
 mod dtype;
 mod error;
 mod expression;
@@ -16,6 +17,7 @@ mod file;
 mod log;
 mod macros;
 mod ptype;
+mod scan;
 mod session;
 mod sink;
 mod string;
