@@ -166,10 +166,29 @@ pub mod test_helpers {
 
     /// Builds a [`Vector`] extension array from flat f64 elements and a vector dimension size.
     pub fn vector_array(dim: u32, elements: &[f64]) -> VortexResult<ArrayRef> {
+        vector_array_with_validity(dim, elements, Validity::NonNullable)
+    }
+
+    /// Builds a nullable [`Vector`] extension array from flat f64 elements, a vector dimension
+    /// size, and a validity mask indicating which rows are valid.
+    pub fn nullable_vector_array(
+        dim: u32,
+        elements: &[f64],
+        valid: impl IntoIterator<Item = bool>,
+    ) -> VortexResult<ArrayRef> {
+        vector_array_with_validity(dim, elements, Validity::from_iter(valid))
+    }
+
+    /// Builds a [`Vector`] extension array with the given validity.
+    fn vector_array_with_validity(
+        dim: u32,
+        elements: &[f64],
+        validity: Validity,
+    ) -> VortexResult<ArrayRef> {
         let row_count = elements.len() / dim as usize;
 
         let elems: ArrayRef = Buffer::copy_from(elements).into_array();
-        let fsl = FixedSizeListArray::new(elems, dim, Validity::NonNullable, row_count);
+        let fsl = FixedSizeListArray::new(elems, dim, validity, row_count);
 
         let ext_dtype = ExtDType::<Vector>::try_new(EmptyMetadata, fsl.dtype().clone())?.erased();
 
@@ -221,7 +240,6 @@ pub mod test_helpers {
         Ok(ExtensionArray::new(ext_dtype, storage).into_array())
     }
 
-    #[expect(dead_code, reason = "TODO(connor): Use this!")]
     /// Extracts the f64 rows from a [`Vector`] extension array.
     ///
     /// Returns a `Vec<Vec<f64>>` where each inner vec is one vector's elements.
