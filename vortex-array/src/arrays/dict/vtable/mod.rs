@@ -221,9 +221,9 @@ impl VTable for Dict {
             .try_into::<Primitive>()
             .ok()
             .vortex_expect("must be primitive");
-        debug_assert!(values.is_canonical());
-        // TODO: add canonical owned cast.
-        let values = values.to_canonical()?;
+        let values = values
+            .try_into_matched::<AnyCanonical>()
+            .vortex_expect("must be canonical");
 
         Ok(ExecutionResult::done(
             take_canonical(values, &codes, ctx)?.into_array(),

@@ -33,6 +33,7 @@ use crate::executor::ExecutionCtx;
 use crate::executor::ExecutionResult;
 use crate::expr::Expression;
 use crate::matcher::Matcher;
+use crate::matcher::OwnedMatcher;
 use crate::scalar_fn;
 use crate::scalar_fn::Arity;
 use crate::scalar_fn::ChildName;
@@ -256,6 +257,14 @@ impl Matcher for AnyScalarFn {
 
     fn try_match(array: &dyn DynArray) -> Option<Self::Match<'_>> {
         array.as_opt::<ScalarFnVTable>()
+    }
+}
+
+impl OwnedMatcher for AnyScalarFn {
+    type OwnedMatch = ScalarFnArray;
+
+    fn maybe_match(array: ArrayRef) -> Option<Self::OwnedMatch> {
+        array.try_into::<ScalarFnVTable>().ok()
     }
 }
 

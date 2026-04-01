@@ -51,6 +51,7 @@ use crate::dtype::PType;
 use crate::match_each_decimal_value_type;
 use crate::match_each_native_ptype;
 use crate::matcher::Matcher;
+use crate::matcher::OwnedMatcher;
 use crate::validity::Validity;
 
 /// An enum capturing the default uncompressed encodings for each [Vortex type](DType).
@@ -1026,6 +1027,56 @@ impl Matcher for AnyCanonical {
             Some(CanonicalView::Variant(a))
         } else {
             array.as_opt::<Extension>().map(CanonicalView::Extension)
+        }
+    }
+}
+
+impl OwnedMatcher for AnyCanonical {
+    type OwnedMatch = Canonical;
+
+    fn maybe_match(array: ArrayRef) -> Option<Self::OwnedMatch> {
+        if !<AnyCanonical as Matcher>::matches(&*array) {
+            return None;
+        }
+        let array = match array.try_into::<Null>() {
+            Ok(a) => return Some(Canonical::Null(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<Bool>() {
+            Ok(a) => return Some(Canonical::Bool(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<Primitive>() {
+            Ok(a) => return Some(Canonical::Primitive(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<Decimal>() {
+            Ok(a) => return Some(Canonical::Decimal(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<Struct>() {
+            Ok(a) => return Some(Canonical::Struct(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<ListView>() {
+            Ok(a) => return Some(Canonical::List(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<FixedSizeList>() {
+            Ok(a) => return Some(Canonical::FixedSizeList(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<VarBinView>() {
+            Ok(a) => return Some(Canonical::VarBinView(a)),
+            Err(array) => array,
+        };
+        let array = match array.try_into::<Variant>() {
+            Ok(a) => return Some(Canonical::Variant(a)),
+            Err(array) => array,
+        };
+        match array.try_into::<Extension>() {
+            Ok(a) => Some(Canonical::Extension(a)),
+            Err(_) => None,
         }
     }
 }

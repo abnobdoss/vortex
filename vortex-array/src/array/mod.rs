@@ -51,6 +51,7 @@ use crate::expr::stats::Stat;
 use crate::expr::stats::StatsProviderExt;
 use crate::hash;
 use crate::matcher::Matcher;
+use crate::matcher::OwnedMatcher;
 use crate::optimizer::ArrayOptimizer;
 use crate::scalar::Scalar;
 use crate::scalar_fn::ReduceNode;
@@ -314,6 +315,18 @@ impl dyn DynArray + '_ {
             Ok(array) => array.into_inner(),
             Err(arc) => arc.deref().inner().clone(),
         })
+    }
+
+    /// Returns the array matched by the given owned matcher, consuming the `ArrayRef`.
+    pub fn into_<M: OwnedMatcher>(self: Arc<Self>) -> M::OwnedMatch {
+        self.try_into_matched::<M>()
+            .vortex_expect("Failed to downcast")
+    }
+
+    /// Try to match the given array using an owned matcher, returning the owned matched type
+    /// if successful.
+    pub fn try_into_matched<M: OwnedMatcher>(self: Arc<Self>) -> Option<M::OwnedMatch> {
+        M::maybe_match(self)
     }
 
     pub fn as_constant(&self) -> Option<Scalar> {
@@ -1142,5 +1155,39 @@ impl<V: VTable> Matcher for V {
         DynArray::as_any(array)
             .downcast_ref::<ArrayAdapter<V>>()
             .map(|adapter| adapter.as_inner())
+    }
+}
+
+/// Implement an owned matcher for a specific VTable type.
+///
+/// During the migration, this tries both `Array<V>` (new path) and `ArrayAdapter<V>`
+/// (legacy path). Returns `V::Array`.
+impl<V: VTable> OwnedMatcher for V {
+    type OwnedMatch = V::Array;
+
+    fn maybe_match(array: ArrayRef) -> Option<Self::OwnedMatch> {
+        if !<V as Matcher>::matches(&*array) {
+            return None;
+        }
+        let any_arc = array.as_any_arc();
+        // Try new Array<V> first.
+        match any_arc.downcast::<Array<V>>() {
+            Ok(typed) => Some(match Arc::try_unwrap(typed) {
+                Ok(array) => array.into_inner(),
+                Err(arc) => arc.deref().inner().clone(),
+            }),
+            Err(any_arc) => {
+                // Fall back to legacy ArrayAdapter<V>.
+                match any_arc.downcast::<ArrayAdapter<V>>() {
+                    Ok(adapter) => Some(match Arc::try_unwrap(adapter) {
+                        Ok(adapter) => adapter.into_inner(),
+                        Err(arc) => arc.as_inner().clone(),
+                    }),
+                    Err(_) => {
+                        vortex_panic!("matches returned true but downcast failed")
+                    }
+                }
+            }
+        }
     }
 }

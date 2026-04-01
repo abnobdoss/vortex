@@ -3618,6 +3618,12 @@ pub fn vortex_array::arrays::scalar_fn::AnyScalarFn::matches(array: &dyn vortex_
 
 pub fn vortex_array::arrays::scalar_fn::AnyScalarFn::try_match(array: &dyn vortex_array::DynArray) -> core::option::Option<Self::Match>
 
+impl vortex_array::matcher::OwnedMatcher for vortex_array::arrays::scalar_fn::AnyScalarFn
+
+pub type vortex_array::arrays::scalar_fn::AnyScalarFn::OwnedMatch = vortex_array::arrays::scalar_fn::ScalarFnArray
+
+pub fn vortex_array::arrays::scalar_fn::AnyScalarFn::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
 pub struct vortex_array::arrays::scalar_fn::ExactScalarFn<F: vortex_array::scalar_fn::ScalarFnVTable>(_)
 
 impl<F: core::default::Default + vortex_array::scalar_fn::ScalarFnVTable> core::default::Default for vortex_array::arrays::scalar_fn::ExactScalarFn<F>
@@ -15068,6 +15074,12 @@ pub fn vortex_array::matcher::AnyArray::matches(_array: &dyn vortex_array::DynAr
 
 pub fn vortex_array::matcher::AnyArray::try_match(array: &dyn vortex_array::DynArray) -> core::option::Option<Self::Match>
 
+impl vortex_array::matcher::OwnedMatcher for vortex_array::matcher::AnyArray
+
+pub type vortex_array::matcher::AnyArray::OwnedMatch = alloc::sync::Arc<dyn vortex_array::DynArray>
+
+pub fn vortex_array::matcher::AnyArray::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
 pub trait vortex_array::matcher::Matcher
 
 pub type vortex_array::matcher::Matcher::Match<'a>
@@ -15123,6 +15135,42 @@ pub type V::Match<'a> = &'a <V as vortex_array::vtable::VTable>::Array
 pub fn V::matches(array: &dyn vortex_array::DynArray) -> bool
 
 pub fn V::try_match<'a>(array: &'a dyn vortex_array::DynArray) -> core::option::Option<Self::Match>
+
+pub trait vortex_array::matcher::OwnedMatcher: vortex_array::matcher::Matcher
+
+pub type vortex_array::matcher::OwnedMatcher::OwnedMatch
+
+pub fn vortex_array::matcher::OwnedMatcher::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
+impl vortex_array::matcher::OwnedMatcher for vortex_array::AnyCanonical
+
+pub type vortex_array::AnyCanonical::OwnedMatch = vortex_array::Canonical
+
+pub fn vortex_array::AnyCanonical::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
+impl vortex_array::matcher::OwnedMatcher for vortex_array::AnyColumnar
+
+pub type vortex_array::AnyColumnar::OwnedMatch = vortex_array::Columnar
+
+pub fn vortex_array::AnyColumnar::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
+impl vortex_array::matcher::OwnedMatcher for vortex_array::arrays::scalar_fn::AnyScalarFn
+
+pub type vortex_array::arrays::scalar_fn::AnyScalarFn::OwnedMatch = vortex_array::arrays::scalar_fn::ScalarFnArray
+
+pub fn vortex_array::arrays::scalar_fn::AnyScalarFn::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
+impl vortex_array::matcher::OwnedMatcher for vortex_array::matcher::AnyArray
+
+pub type vortex_array::matcher::AnyArray::OwnedMatch = alloc::sync::Arc<dyn vortex_array::DynArray>
+
+pub fn vortex_array::matcher::AnyArray::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
+impl<V: vortex_array::vtable::VTable> vortex_array::matcher::OwnedMatcher for V
+
+pub type V::OwnedMatch = <V as vortex_array::vtable::VTable>::Array
+
+pub fn V::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
 
 pub mod vortex_array::normalize
 
@@ -24098,6 +24146,12 @@ pub fn vortex_array::AnyCanonical::matches(array: &dyn vortex_array::DynArray) -
 
 pub fn vortex_array::AnyCanonical::try_match<'a>(array: &'a dyn vortex_array::DynArray) -> core::option::Option<Self::Match>
 
+impl vortex_array::matcher::OwnedMatcher for vortex_array::AnyCanonical
+
+pub type vortex_array::AnyCanonical::OwnedMatch = vortex_array::Canonical
+
+pub fn vortex_array::AnyCanonical::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
+
 pub struct vortex_array::AnyColumnar
 
 impl vortex_array::matcher::Matcher for vortex_array::AnyColumnar
@@ -24107,6 +24161,12 @@ pub type vortex_array::AnyColumnar::Match<'a> = vortex_array::ColumnarView<'a>
 pub fn vortex_array::AnyColumnar::matches(array: &dyn vortex_array::DynArray) -> bool
 
 pub fn vortex_array::AnyColumnar::try_match<'a>(array: &'a dyn vortex_array::DynArray) -> core::option::Option<Self::Match>
+
+impl vortex_array::matcher::OwnedMatcher for vortex_array::AnyColumnar
+
+pub type vortex_array::AnyColumnar::OwnedMatch = vortex_array::Columnar
+
+pub fn vortex_array::AnyColumnar::maybe_match(array: vortex_array::ArrayRef) -> core::option::Option<Self::OwnedMatch>
 
 #[repr(transparent)] pub struct vortex_array::ArrayAdapter<V: vortex_array::vtable::VTable>(_)
 
