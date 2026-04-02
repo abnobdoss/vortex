@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
+#include <stdint.h>
 
 //
 // THIS FILE IS AUTO-GENERATED, DO NOT MAKE EDITS DIRECTLY
@@ -1345,6 +1346,7 @@ void vx_struct_column_builder_free(vx_struct_column_builder *ptr);
 /**
  * Create a new column-wise struct array builder with given validity and a
  * capacity hint. validity can't be NULL.
+ * Capacity hint is for the number of columns.
  * If you don't know capacity, pass 0.
  * if validity is NULL, returns NULL.
  */

@@ -192,6 +192,9 @@ pub unsafe extern "C-unwind" fn vx_array_dtype(array: *const vx_array) -> *const
     vx_dtype::new_ref(vx_array::as_ref(array).dtype())
 }
 
+// Return an owned field for array at index.
+// Returns NULL and sets error_out if index is out of bounds or array doesn't
+// have dtype DTYPE_STRUCT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_array_get_field(
     array: *const vx_array,
