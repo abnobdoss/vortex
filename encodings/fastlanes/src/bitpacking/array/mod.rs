@@ -518,6 +518,7 @@ mod test {
     use vortex_array::ToCanonical;
     use vortex_array::arrays::PrimitiveArray;
     use vortex_array::assert_arrays_eq;
+    use vortex_array::validity::Validity;
     use vortex_buffer::Buffer;
 
     use crate::BitPackedData;
@@ -562,7 +563,7 @@ mod test {
         );
         assert_arrays_eq!(
             packed_with_patches.as_array().to_primitive(),
-            PrimitiveArray::new(values, vortex_array::validity::Validity::NonNullable)
+            PrimitiveArray::new(values, Validity::NonNullable)
         );
     }
 }

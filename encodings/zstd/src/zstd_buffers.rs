@@ -21,6 +21,7 @@ use vortex_array::dtype::DType;
 use vortex_array::scalar::Scalar;
 use vortex_array::serde::ArrayChildren;
 use vortex_array::session::ArraySessionExt;
+use vortex_array::validity::Validity;
 use vortex_array::vtable;
 use vortex_array::vtable::OperationsVTable;
 use vortex_array::vtable::VTable;
@@ -490,11 +491,9 @@ impl OperationsVTable<ZstdBuffers> for ZstdBuffers {
 }
 
 impl ValidityVTable<ZstdBuffers> for ZstdBuffers {
-    fn validity(
-        array: ArrayView<'_, ZstdBuffers>,
-    ) -> VortexResult<vortex_array::validity::Validity> {
+    fn validity(array: ArrayView<'_, ZstdBuffers>) -> VortexResult<Validity> {
         if !array.dtype().is_nullable() {
-            return Ok(vortex_array::validity::Validity::NonNullable);
+            return Ok(Validity::NonNullable);
         }
 
         let inner_array = array.data().decompress_and_build_inner(

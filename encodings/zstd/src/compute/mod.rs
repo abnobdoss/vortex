@@ -9,6 +9,7 @@ mod tests {
     use vortex_array::IntoArray;
     use vortex_array::arrays::PrimitiveArray;
     use vortex_array::compute::conformance::consistency::test_array_consistency;
+    use vortex_array::validity;
     use vortex_buffer::buffer;
 
     use crate::Zstd;
@@ -36,26 +37,17 @@ mod tests {
     }
 
     fn zstd_single() -> ZstdArray {
-        let values = PrimitiveArray::new(
-            buffer![42i64],
-            vortex_array::validity::Validity::NonNullable,
-        );
+        let values = PrimitiveArray::new(buffer![42i64], validity::Validity::NonNullable);
         Zstd::from_primitive(&values, 0, 0).unwrap()
     }
 
     fn zstd_large() -> ZstdArray {
-        let values = PrimitiveArray::new(
-            buffer![0u32..1000],
-            vortex_array::validity::Validity::NonNullable,
-        );
+        let values = PrimitiveArray::new(buffer![0u32..1000], validity::Validity::NonNullable);
         Zstd::from_primitive(&values, 3, 0).unwrap()
     }
 
     fn zstd_all_same() -> ZstdArray {
-        let values = PrimitiveArray::new(
-            buffer![42i32; 100],
-            vortex_array::validity::Validity::NonNullable,
-        );
+        let values = PrimitiveArray::new(buffer![42i32; 100], validity::Validity::NonNullable);
         Zstd::from_primitive(&values, 0, 0).unwrap()
     }
 
