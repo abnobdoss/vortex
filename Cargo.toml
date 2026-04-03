@@ -382,3 +382,6 @@ lto = false
 [profile.bench_assert]
 debug-assertions = true
 inherits = "bench"
+
+[patch.crates-io]
+fastlanes = { git = "https://github.com/spiraldb/fastlanes.git", branch = "adamg/actually-compare-packed-bools" }
