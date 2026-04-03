@@ -159,7 +159,7 @@ where
 
     Ok(BoolArray::new(
         bits.freeze(),
-        array.validity().union_nullability(nullability),
+        array.validity()?.union_nullability(nullability),
     )
     .into_array())
 }
@@ -254,7 +254,7 @@ where
 
     Ok(BoolArray::new(
         bits.freeze(),
-        array.validity().union_nullability(nullability),
+        array.validity()?.union_nullability(nullability),
     )
     .into_array())
 }
