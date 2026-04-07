@@ -3,9 +3,6 @@
 
 //! Integer compression schemes.
 
-use std::env;
-use std::sync::LazyLock;
-
 use vortex_array::ArrayRef;
 use vortex_array::Canonical;
 use vortex_array::IntoArray;
@@ -29,6 +26,7 @@ use vortex_error::vortex_err;
 use vortex_fastlanes::BitPacked;
 use vortex_fastlanes::FoR;
 use vortex_fastlanes::FoRArrayExt;
+use vortex_fastlanes::USE_EXPERIMENTAL_PATCHES;
 use vortex_fastlanes::bitpack_compress::bit_width_histogram;
 use vortex_fastlanes::bitpack_compress::bitpack_encode;
 use vortex_fastlanes::bitpack_compress::find_best_bit_width;
@@ -284,10 +282,6 @@ impl Scheme for ZigZagScheme {
         Ok(ZigZag::try_new(compressed)?.into_array())
     }
 }
-
-// replicated from vortex-file
-static USE_EXPERIMENTAL_PATCHES: LazyLock<bool> =
-    LazyLock::new(|| env::var("VORTEX_EXPERIMENTAL_PATCHED_ARRAY").is_ok());
 
 impl Scheme for BitPackingScheme {
     fn scheme_name(&self) -> &'static str {
