@@ -109,7 +109,7 @@ unsafe fn data_source_new(
     vortex_ensure!(!session.is_null());
     vortex_ensure!(!opts.is_null());
 
-    let session = vx_session::as_ref(session).clone();
+    let session = vx_session::as_ref(session);
 
     let opts = unsafe { &*opts };
     vortex_ensure!(!opts.files.is_null());
@@ -117,7 +117,7 @@ unsafe fn data_source_new(
     let glob = unsafe { to_string(opts.files) };
 
     RUNTIME.block_on(async {
-        let data_source = MultiFileDataSource::new(session)
+        let data_source = MultiFileDataSource::new(session.clone())
             //.with_filesystem(fs)
             .with_glob(glob)
             .build()
@@ -183,11 +183,16 @@ pub unsafe extern "C-unwind" fn vx_data_source_get_row_count(
 mod tests {
     use std::ffi::CString;
     use std::ptr;
+    use std::sync::Arc;
 
-    use vortex::dtype::DType;
-    use vortex::dtype::PType;
+    use vortex::file::multi::MultiFileDataSource;
+    use vortex::io::runtime::BlockingRuntime;
+    use vortex::scan::DataSourceRef;
+    use vortex::session::VortexSession;
+    use vortex::VortexSessionDefault;
 
     use crate::data_source::vx_cardinality;
+    use crate::data_source::vx_data_source;
     use crate::data_source::vx_data_source_dtype;
     use crate::data_source::vx_data_source_free;
     use crate::data_source::vx_data_source_get_row_count;
@@ -195,14 +200,17 @@ mod tests {
     use crate::data_source::vx_data_source_options;
     use crate::data_source::vx_data_source_row_count;
     use crate::dtype::vx_dtype;
+    use crate::session::vx_session;
     use crate::session::vx_session_free;
     use crate::session::vx_session_new;
+    use crate::tests::SAMPLE_ROWS;
     use crate::tests::assert_error;
     use crate::tests::assert_no_error;
     use crate::tests::write_sample;
+    use crate::RUNTIME;
 
     #[test]
-    fn create_datasource_invalid() {
+    fn test_create_invalid() {
         unsafe {
             let session = vx_session_new();
             let mut error = ptr::null_mut();
@@ -235,10 +243,46 @@ mod tests {
     }
 
     #[test]
-    fn datasource_row_count() {
+    fn test_leak() {
+        unsafe {
+            let glob: String;
+            {
+                let session = vx_session_new();
+                let (sample, _) = write_sample(session);
+                glob = sample.path().to_str().unwrap().to_owned();
+
+                {
+                    let session = vx_session::as_ref(session);
+                    RUNTIME.block_on(async {
+                        MultiFileDataSource::new(session.clone())
+                            .with_glob(&glob)
+                            .build()
+                            .await.unwrap();
+                    });
+                }
+                vx_session_free(session);
+            }
+            {
+                let session = vx_session_new();
+                {
+                    let session = vx_session::as_ref(session);
+                    RUNTIME.block_on(async {
+                        MultiFileDataSource::new(session.clone())
+                            .with_glob(glob)
+                            .build()
+                            .await.unwrap();
+                    });
+                }
+                vx_session_free(session);
+            }
+        }
+    }
+
+    #[test]
+    fn test_row_count() {
         unsafe {
             let session = vx_session_new();
-            let sample = write_sample(session);
+            let (sample, struct_array) = write_sample(session);
 
             let path = CString::new(sample.path().to_str().unwrap()).unwrap();
             let opts = vx_data_source_options {
@@ -252,7 +296,7 @@ mod tests {
             assert!(!ds.is_null());
 
             let dtype = vx_dtype::as_ref(vx_data_source_dtype(ds));
-            assert_eq!(dtype, &DType::Primitive(PType::I32, false.into()));
+            assert_eq!(dtype, struct_array.dtype());
 
             let mut row_count = vx_data_source_row_count {
                 cardinality: vx_cardinality::VX_CARD_UNKNOWN,
@@ -260,7 +304,7 @@ mod tests {
             };
             vx_data_source_get_row_count(ds, &raw mut row_count);
             assert_eq!(row_count.cardinality, vx_cardinality::VX_CARD_MAXIMUM);
-            assert_eq!(row_count.rows, 3);
+            assert_eq!(row_count.rows, SAMPLE_ROWS as u64);
 
             vx_data_source_free(ds);
             vx_session_free(session);

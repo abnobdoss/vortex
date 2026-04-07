@@ -10542,6 +10542,7 @@ dependencies = [
  "object_store 0.13.1",
  "paste",
  "prost 0.14.3",
+ "rand 0.8.5",
  "tempfile",
  "tracing",
  "tracing-subscriber",

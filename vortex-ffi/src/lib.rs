@@ -86,11 +86,12 @@ mod tests {
     use std::ptr;
     use std::sync::Arc;
 
+    use rand::Rng;
     use tempfile::NamedTempFile;
-    use vortex::buffer::buffer;
-    use vortex::dtype::DType;
     use vortex_array::IntoArray;
     use vortex_array::arrays::PrimitiveArray;
+    use vortex_array::arrays::StructArray;
+    use vortex_array::arrays::VarBinViewArray;
     use vortex_array::validity::Validity;
 
     use crate::array::vx_array;
@@ -126,25 +127,56 @@ mod tests {
         }
     }
 
-    /// 3 rows of Primitive I32
-    pub(crate) unsafe fn write_sample(session: *const vx_session) -> NamedTempFile {
+    fn random_str(length: usize) -> String {
+        const CHARSET: &[u8] = b"0123456789";
+        let mut rng = rand::thread_rng();
+
+        (0..length)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect()
+    }
+
+    pub const SAMPLE_ROWS: usize = 200;
+
+    /// Write 200 rows of Struct { age=i32, height=i32, name=String } into a
+    /// temporary file
+    pub(crate) unsafe fn write_sample(session: *const vx_session) -> (NamedTempFile, StructArray) {
+        let age = (0..SAMPLE_ROWS as u64).map(|x| Some(x));
+        let age = PrimitiveArray::from_option_iter(age.into_iter());
+
+        let height = (0..SAMPLE_ROWS as u64).map(|x| Some(200 - x));
+        let height = PrimitiveArray::from_option_iter(height);
+
+        let name = (0..SAMPLE_ROWS).map(|x| random_str(x.try_into().unwrap()));
+        let name = VarBinViewArray::from_iter_str(name.into_iter());
+
+        let struct_array = StructArray::try_new(
+            ["age", "height", "name"].into(),
+            vec![age.into_array(), height.into_array(), name.into_array()],
+            SAMPLE_ROWS,
+            Validity::NonNullable,
+        )
+        .unwrap();
+
         let file = NamedTempFile::new().unwrap();
         let path = CString::new(file.path().to_str().unwrap()).unwrap();
+        let dtype = struct_array.dtype();
 
-        let dtype = DType::Primitive(vortex::dtype::PType::I32, false.into());
-        let vx_dtype_ptr = vx_dtype::new(Arc::new(dtype));
-        let mut error = ptr::null_mut();
         unsafe {
+            let vx_dtype_ptr = vx_dtype::new(Arc::new(dtype.clone()));
+            let mut error = ptr::null_mut();
             let sink =
                 vx_array_sink_open_file(session, path.as_ptr(), vx_dtype_ptr, &raw mut error);
-            let array = PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::NonNullable);
-            let vx_array_ptr = vx_array::new(array.into_array());
-            vx_array_sink_push(sink, vx_array_ptr, &raw mut error);
+            let array = vx_array::new(struct_array.clone().into_array());
+            vx_array_sink_push(sink, array, &raw mut error);
             vx_array_sink_close(sink, &raw mut error);
-            vx_array_free(vx_array_ptr);
+            vx_array_free(array);
             vx_dtype_free(vx_dtype_ptr);
         }
 
-        file
+        (file, struct_array)
     }
 }
