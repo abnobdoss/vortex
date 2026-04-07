@@ -183,16 +183,15 @@ pub unsafe extern "C-unwind" fn vx_data_source_get_row_count(
 mod tests {
     use std::ffi::CString;
     use std::ptr;
-    use std::sync::Arc;
 
+    use vortex::VortexSessionDefault;
     use vortex::file::multi::MultiFileDataSource;
     use vortex::io::runtime::BlockingRuntime;
-    use vortex::scan::DataSourceRef;
+    use vortex::io::session::RuntimeSessionExt;
     use vortex::session::VortexSession;
-    use vortex::VortexSessionDefault;
 
+    use crate::RUNTIME;
     use crate::data_source::vx_cardinality;
-    use crate::data_source::vx_data_source;
     use crate::data_source::vx_data_source_dtype;
     use crate::data_source::vx_data_source_free;
     use crate::data_source::vx_data_source_get_row_count;
@@ -200,14 +199,12 @@ mod tests {
     use crate::data_source::vx_data_source_options;
     use crate::data_source::vx_data_source_row_count;
     use crate::dtype::vx_dtype;
-    use crate::session::vx_session;
     use crate::session::vx_session_free;
     use crate::session::vx_session_new;
     use crate::tests::SAMPLE_ROWS;
     use crate::tests::assert_error;
     use crate::tests::assert_no_error;
     use crate::tests::write_sample;
-    use crate::RUNTIME;
 
     #[test]
     fn test_create_invalid() {
@@ -244,37 +241,17 @@ mod tests {
 
     #[test]
     fn test_leak() {
-        unsafe {
-            let glob: String;
-            {
-                let session = vx_session_new();
-                let (sample, _) = write_sample(session);
-                glob = sample.path().to_str().unwrap().to_owned();
-
-                {
-                    let session = vx_session::as_ref(session);
-                    RUNTIME.block_on(async {
-                        MultiFileDataSource::new(session.clone())
-                            .with_glob(&glob)
-                            .build()
-                            .await.unwrap();
-                    });
-                }
-                vx_session_free(session);
-            }
-            {
-                let session = vx_session_new();
-                {
-                    let session = vx_session::as_ref(session);
-                    RUNTIME.block_on(async {
-                        MultiFileDataSource::new(session.clone())
-                            .with_glob(glob)
-                            .build()
-                            .await.unwrap();
-                    });
-                }
-                vx_session_free(session);
-            }
+        let glob: &str =
+            "/home/myrrc/vortex/vortex-bench/data/tpch/1.0/vortex-compact/customer_0.vortex";
+        for _ in 0..2 {
+            let session = VortexSession::default().with_handle(RUNTIME.handle());
+            RUNTIME.block_on(async {
+                MultiFileDataSource::new(session.clone())
+                    .with_glob(glob)
+                    .build()
+                    .await
+                    .unwrap();
+            });
         }
     }
 
