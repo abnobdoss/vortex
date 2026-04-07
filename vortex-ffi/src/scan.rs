@@ -60,7 +60,7 @@ pub enum vx_scan_selection_include {
 
 #[repr(C)]
 pub struct vx_scan_selection {
-    pub idx: *mut u64,
+    pub idx: *const u64,
     pub idx_len: usize,
     pub include: vx_scan_selection_include,
 }
@@ -301,4 +301,133 @@ pub unsafe extern "C-unwind" fn vx_partition_next(
 /// Scan progress between 0.0 and 1.0
 pub unsafe extern "C-unwind" fn vx_scan_progress(_scan: *const vx_scan) -> f64 {
     0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CStr;
+    use std::ptr;
+    use tempfile::NamedTempFile;
+
+    use vortex::array::IntoArray;
+    use vortex::array::ToCanonical;
+    use vortex::array::arrays::BoolArray;
+    use vortex::array::arrays::ListArray;
+    use vortex::array::arrays::PrimitiveArray;
+    use vortex::array::arrays::StructArray;
+    use vortex::array::arrays::VarBinViewArray;
+    use vortex::array::validity::Validity;
+    use vortex::buffer::Buffer;
+    use vortex::buffer::buffer;
+    use vortex::expr::lit;
+    use vortex_array::assert_arrays_eq;
+
+    use crate::array::vx_array;
+    use crate::array::vx_array_apply;
+    use crate::array::vx_array_free;
+    use crate::data_source::vx_data_source_free;
+    use crate::data_source::vx_data_source_new;
+    use crate::data_source::vx_data_source_options;
+    use crate::error::vx_error_free;
+    use crate::expression::vx_binary_operator;
+    use crate::expression::vx_expression;
+    use crate::expression::vx_expression_and;
+    use crate::expression::vx_expression_binary;
+    use crate::expression::vx_expression_free;
+    use crate::expression::vx_expression_get_item;
+    use crate::expression::vx_expression_list_contains;
+    use crate::expression::vx_expression_or;
+    use crate::expression::vx_expression_root;
+    use crate::expression::vx_expression_select;
+    use crate::scan::vx_data_source_scan;
+    use crate::scan::vx_partition_free;
+    use crate::scan::vx_partition_next;
+    use crate::scan::vx_scan_free;
+    use crate::scan::vx_scan_next;
+    use crate::scan::vx_scan_options;
+    use crate::scan::vx_scan_selection;
+    use crate::scan::vx_scan_selection_include;
+    use crate::session::vx_session_free;
+    use crate::session::vx_session_new;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_project_single_field() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let age = PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::NonNullable);
+        let height = PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::NonNullable);
+        let struct_array = StructArray::try_new(
+            ["age", "height"].into(),
+            vec![age.clone().into_array(), height.clone().into_array()],
+            3,
+            Validity::NonNullable
+        ).unwrap();
+
+        unsafe {
+            let session = vx_session_new();
+            let root = vx_expression_root();
+            let selection = vx_scan_selection {
+                idx: ptr::null_mut(),
+                idx_len: 0,
+                include: vx_scan_selection_include::VX_S_INCLUDE_ALL,
+            };
+
+            let ds_options = vx_data_source_options {
+                files: (*temp_file.as_file()).nam().to_str().as_mut_ptr(),
+                fs_set_userdata: None,
+                fs_open: None,
+                fs_create: None,
+                fs_list: None,
+                fs_close: None,
+                fs_size: None,
+                fs_read: None,
+                fs_write: None,
+                fs_sync: None,
+                glob: None,
+            };
+
+            let mut scan_options = vx_scan_options {
+                projection: ptr::null(),
+                filter: ptr::null(),
+                row_range_begin: 0,
+                row_range_end: 0,
+                selection,
+                limit: 0,
+                max_threads: 0,
+                ordered: 0,
+            };
+
+            let age_field = vx_expression_get_item(c"age".as_ptr(), root);
+            assert!(!age_field.is_null());
+            scan_options.projection = age_field;
+
+            let mut error = ptr::null_mut();
+            let ds = vx_data_source_new(session, &raw const ds_options, &raw mut error);
+            assert!(error.is_null());
+            assert!(!ds.is_null());
+
+            let scan = vx_data_source_scan(ds, &raw const scan_options, ptr::null_mut(), &raw mut error);
+            assert!(error.is_null());
+            assert!(!scan.is_null());
+
+            let partition = vx_scan_next(scan, &raw mut error);
+            assert!(error.is_null());
+
+            let array = vx_partition_next(partition, &raw mut error);
+            assert!(error.is_null());
+            {
+                let array = vx_array::as_ref(array);
+                assert_arrays_eq!(array, age);
+            }
+            vx_array_free(array);
+
+            vx_partition_free(partition);
+            vx_scan_free(scan);
+            vx_data_source_free(ds);
+            vx_expression_free(age_field);
+
+            vx_expression_free(root);
+            vx_session_free(session);
+        }
+    }
 }

@@ -155,7 +155,7 @@ TEST_CASE("Write file", "[datasource]") {
     vx_session_free(session);
 }
 
-TEST_CASE("Write file and read back types", "[datasource]") {
+TEST_CASE("Write file and read dtypes", "[datasource]") {
     vx_session *session = vx_session_new();
     TempPath path = write_sample(session, fs::current_path() / "write-read-types.vortex");
     vx_error *error = nullptr;
@@ -202,6 +202,24 @@ TEST_CASE("Write file and read back types", "[datasource]") {
     vx_data_source_free(ds);
 }
 
+void verify_age_field(const vx_array* age_field) {
+    REQUIRE(vx_array_has_dtype(age_field, DTYPE_PRIMITIVE));
+    REQUIRE(vx_dtype_primitive_ptype(vx_array_dtype(age_field)) == PTYPE_U8);
+    REQUIRE(vx_array_len(age_field) == SAMPLE_ROWS);
+    for (size_t i = 0; i < SAMPLE_ROWS; ++i) {
+        REQUIRE(vx_array_get_u8(age_field, i) == i);
+    }
+}
+
+void verify_height_field(const vx_array* height_field) {
+    REQUIRE(vx_array_has_dtype(height_field, DTYPE_PRIMITIVE));
+    REQUIRE(vx_dtype_primitive_ptype(vx_array_dtype(height_field)) == PTYPE_U16);
+    REQUIRE(vx_array_len(height_field) == SAMPLE_ROWS);
+    for (size_t i = 0; i < SAMPLE_ROWS; ++i) {
+        REQUIRE(vx_array_get_u16(height_field, i) > 0);
+    }
+}
+
 void verify_sample_array(const vx_array *array) {
     REQUIRE(vx_array_len(array) == SAMPLE_ROWS);
     REQUIRE(vx_array_has_dtype(array, DTYPE_STRUCT));
@@ -232,22 +250,12 @@ void verify_sample_array(const vx_array *array) {
 
     const vx_array *age_field = vx_array_get_field(array, 0, &error);
     require_no_error(error);
-    REQUIRE(vx_array_has_dtype(age_field, DTYPE_PRIMITIVE));
-    REQUIRE(vx_dtype_primitive_ptype(vx_array_dtype(age_field)) == PTYPE_U8);
-    REQUIRE(vx_array_len(age_field) == SAMPLE_ROWS);
-    for (size_t i = 0; i < SAMPLE_ROWS; ++i) {
-        REQUIRE(vx_array_get_u8(age_field, i) == i);
-    }
+    verify_age_field(age_field);
     vx_array_free(age_field);
 
     const vx_array *height_field = vx_array_get_field(array, 1, &error);
     require_no_error(error);
-    REQUIRE(vx_array_has_dtype(height_field, DTYPE_PRIMITIVE));
-    REQUIRE(vx_dtype_primitive_ptype(vx_array_dtype(height_field)) == PTYPE_U16);
-    REQUIRE(vx_array_len(height_field) == SAMPLE_ROWS);
-    for (size_t i = 0; i < SAMPLE_ROWS; ++i) {
-        REQUIRE(vx_array_get_u16(height_field, i) > 0);
-    }
+    verify_height_field(height_field);
     vx_array_free(height_field);
 
     REQUIRE(vx_array_get_field(array, 2, &error) == nullptr);
@@ -295,14 +303,17 @@ TEST_CASE("Basic scan", "[datasource]") {
     require_no_error(error);
     REQUIRE(ds != nullptr);
 
-    vx_scan *scan = vx_data_source_scan(ds, nullptr, nullptr, &error);
+    vx_estimate estimate = {};
+    vx_scan *scan = vx_data_source_scan(ds, nullptr, &estimate, &error);
     require_no_error(error);
     REQUIRE(scan != nullptr);
+    REQUIRE(estimate.type == VX_ESTIMATE_EXACT);
+    REQUIRE(estimate.estimate == SAMPLE_ROWS);
 
     vx_partition *partition = vx_scan_next(scan, &error);
     require_no_error(error);
 
-    vx_estimate estimate = {};
+    estimate = {};
     vx_partition_row_count(partition, &estimate, &error);
     require_no_error(error);
     REQUIRE(estimate.type == VX_ESTIMATE_EXACT);
@@ -326,4 +337,75 @@ TEST_CASE("Basic scan", "[datasource]") {
 
     vx_data_source_free(ds);
     vx_session_free(session);
+}
+
+const vx_array* scan_with_options(vx_scan_options& options) {
+    vx_session *session = vx_session_new();
+    TempPath path = write_sample(session, fs::current_path() / "projections.vortex");
+    vx_error *error = nullptr;
+
+    vx_data_source_options ds_options = {};
+    ds_options.files = path.c_str();
+
+    const vx_data_source *ds = vx_data_source_new(session, &ds_options, &error);
+    require_no_error(error);
+    REQUIRE(ds != nullptr);
+
+    vx_scan *scan = vx_data_source_scan(ds, &options, nullptr, &error);
+    require_no_error(error);
+    REQUIRE(scan != nullptr);
+
+    vx_partition *partition = vx_scan_next(scan, &error);
+    require_no_error(error);
+    REQUIRE(partition != nullptr);
+
+    const vx_array *array = vx_partition_next(partition, &error);
+    require_no_error(error);
+    REQUIRE(array != nullptr);
+
+    vx_partition_free(partition);
+    vx_scan_free(scan);
+
+    vx_data_source_free(ds);
+    vx_session_free(session);
+
+    return array;
+}
+
+TEST_CASE("Project all fields", "[projection]") {
+    vx_scan_options opts = {};
+    const vx_array* array = scan_with_options(opts);
+    verify_sample_array(array);
+    vx_array_free(array);
+}
+
+TEST_CASE("Project root", "[projection]") {
+    vx_expression* root = vx_expression_root();
+    vx_scan_options opts = {};
+    opts.projection = root;
+    const vx_array* array = scan_with_options(opts);
+    verify_sample_array(array);
+    vx_array_free(array);
+    vx_expression_free(root);
+}
+
+TEST_CASE("Project single field", "[projection]") {
+    vx_expression* root = vx_expression_root();
+    vx_scan_options opts = {};
+
+    vx_expression* age_field = vx_expression_get_item("age", root);
+    opts.projection = age_field;
+    const vx_array* array = scan_with_options(opts);
+    verify_age_field(array);
+    vx_array_free(array);
+    vx_expression_free(age_field);
+
+    vx_expression* height_field = vx_expression_get_item("height", root);
+    opts.projection = height_field;
+    array = scan_with_options(opts);
+    verify_height_field(array);
+    vx_array_free(array);
+    vx_expression_free(height_field);
+
+    vx_expression_free(root);
 }

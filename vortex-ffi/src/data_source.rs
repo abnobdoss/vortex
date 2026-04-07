@@ -37,8 +37,6 @@ pub type vx_list_callback =
 pub type vx_glob_callback =
     Option<unsafe extern "C" fn(userdata: *mut c_void, file: *const c_char)>;
 
-pub type vx_fs_use_vortex =
-    Option<unsafe extern "C" fn(schema: *const c_char, path: *const c_char) -> c_int>;
 pub type vx_fs_set_userdata = Option<unsafe extern "C" fn(userdata: *mut c_void)>;
 
 pub type vx_fs_open = Option<
@@ -90,24 +88,17 @@ pub type vx_glob = Option<
 #[repr(C)]
 /// Host must either implement all or none of fs_* callbacks.
 pub struct vx_data_source_options {
-    // TODO what if the program wants to read a Vortex file from an existing buffer?
-    files: *const c_char,
-
-    /// Whether to use Vortex filesystem or host's filesystem.
-    /// Return 1 to use Vortex for a given schema ("file", "s3") and path.
-    /// Return 0 to use host's filesystem.
-    fs_use_vortex: vx_fs_use_vortex,
-    fs_set_userdata: vx_fs_set_userdata,
-    fs_open: vx_fs_open,
-    fs_create: vx_fs_create,
-    fs_list: vx_fs_list,
-    fs_close: vx_fs_close,
-    fs_size: vx_fs_size,
-    fs_read: vx_fs_read,
-    fs_write: vx_fs_write,
-    fs_sync: vx_fs_sync,
-
-    glob: vx_glob,
+    pub files: *const c_char,
+    pub fs_set_userdata: vx_fs_set_userdata,
+    pub fs_open: vx_fs_open,
+    pub fs_create: vx_fs_create,
+    pub fs_list: vx_fs_list,
+    pub fs_close: vx_fs_close,
+    pub fs_size: vx_fs_size,
+    pub fs_read: vx_fs_read,
+    pub fs_write: vx_fs_write,
+    pub fs_sync: vx_fs_sync,
+    pub glob: vx_glob,
 }
 
 unsafe fn data_source_new(
