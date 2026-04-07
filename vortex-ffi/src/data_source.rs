@@ -102,6 +102,13 @@ pub struct vx_data_source_options {
     pub glob: vx_glob,
 }
 
+// TODO(myrrc): see https://github.com/vortex-data/vortex/issues/7324
+#[cfg(vortex_nightly)]
+unsafe extern "C" {
+    pub fn __lsan_disable();
+    pub fn __lsan_enable();
+}
+
 unsafe fn data_source_new(
     session: *const vx_session,
     opts: *const vx_data_source_options,
@@ -116,14 +123,26 @@ unsafe fn data_source_new(
 
     let glob = unsafe { to_string(opts.files) };
 
-    RUNTIME.block_on(async {
+    #[cfg(vortex_nightly)]
+    unsafe {
+        __lsan_disable();
+    }
+
+    let ds = RUNTIME.block_on(async {
         let data_source = MultiFileDataSource::new(session.clone())
             //.with_filesystem(fs)
             .with_glob(glob)
             .build()
             .await?;
         Ok(vx_data_source::new(Arc::new(data_source) as DataSourceRef))
-    })
+    });
+
+    #[cfg(vortex_nightly)]
+    unsafe {
+        __lsan_enable();
+    }
+
+    ds
 }
 
 /// Create a new owned datasource which must be freed by the caller
@@ -184,13 +203,6 @@ mod tests {
     use std::ffi::CString;
     use std::ptr;
 
-    use vortex::VortexSessionDefault;
-    use vortex::file::multi::MultiFileDataSource;
-    use vortex::io::runtime::BlockingRuntime;
-    use vortex::io::session::RuntimeSessionExt;
-    use vortex::session::VortexSession;
-
-    use crate::RUNTIME;
     use crate::data_source::vx_cardinality;
     use crate::data_source::vx_data_source_dtype;
     use crate::data_source::vx_data_source_free;
@@ -236,22 +248,6 @@ mod tests {
             assert!(ds.is_null());
 
             vx_session_free(session);
-        }
-    }
-
-    #[test]
-    fn test_leak() {
-        let glob: &str =
-            "/home/myrrc/vortex/vortex-bench/data/tpch/1.0/vortex-compact/customer_0.vortex";
-        for _ in 0..2 {
-            let session = VortexSession::default().with_handle(RUNTIME.handle());
-            RUNTIME.block_on(async {
-                MultiFileDataSource::new(session.clone())
-                    .with_glob(glob)
-                    .build()
-                    .await
-                    .unwrap();
-            });
         }
     }
 

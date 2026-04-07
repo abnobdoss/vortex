@@ -36,7 +36,9 @@ fn main() {
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).contains("nightly"))
         .unwrap_or(false);
-    if !is_nightly {
+    if is_nightly {
+        println!("cargo::rustc-cfg=vortex_nightly");
+    } else {
         println!("cargo:info=Skipping header generation as we're not on nightly");
         return;
     }

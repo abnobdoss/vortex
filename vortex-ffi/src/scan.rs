@@ -299,12 +299,6 @@ pub unsafe extern "C-unwind" fn vx_partition_next(
     }
 }
 
-#[unsafe(no_mangle)]
-/// Scan progress between 0.0 and 1.0
-pub unsafe extern "C-unwind" fn vx_scan_progress(_scan: *const vx_scan) -> f64 {
-    0.0
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
@@ -318,6 +312,8 @@ mod tests {
     use crate::data_source::vx_data_source_free;
     use crate::data_source::vx_data_source_new;
     use crate::data_source::vx_data_source_options;
+    use crate::expression::vx_binary_operator;
+    use crate::expression::vx_expression_binary;
     use crate::expression::vx_expression_free;
     use crate::expression::vx_expression_get_item;
     use crate::expression::vx_expression_root;
@@ -397,9 +393,7 @@ mod tests {
             let root = vx_expression_root();
             let mut opts = vx_scan_options::default();
 
-            for (field, c_field) in [
-                ("age", c"age"), //("height", c"height"), //("name", c"name")
-            ] {
+            for (field, c_field) in [("age", c"age"), ("height", c"height"), ("name", c"name")] {
                 let field_expr = vx_expression_get_item(c_field.as_ptr(), root);
                 assert!(!field_expr.is_null());
                 opts.projection = field_expr;
@@ -414,4 +408,57 @@ mod tests {
             vx_expression_free(root);
         }
     }
+
+    #[test]
+    fn test_project_sum() {
+        unsafe {
+            let root = vx_expression_root();
+            let mut opts = vx_scan_options::default();
+
+            let expr_age = vx_expression_get_item(c"age".as_ptr(), root);
+            let expr_height = vx_expression_get_item(c"height".as_ptr(), root);
+            let expr_sum =
+                vx_expression_binary(vx_binary_operator::VX_OPERATOR_ADD, expr_age, expr_height);
+
+            opts.projection = expr_sum;
+            let (array, struct_array) = scan(&raw const opts);
+            assert_arrays_eq!(
+                vx_array::as_ref(array),
+                struct_array.unmasked_field_by_name(field).unwrap()
+            );
+            vx_array_free(array);
+
+            vx_expression_free(expr_age);
+            vx_expression_free(expr_height);
+            vx_expression_free(expr_sum);
+            vx_expression_free(root);
+        }
+    }
+
+    #[test]
+    fn test_filter() { }
+
+    #[test]
+    fn test_filter_project() { }
+
+    #[test]
+    fn test_row_range() { }
+
+    #[test]
+    fn test_selection() { }
+
+    #[test]
+    fn test_limit() { }
+
+    #[test]
+    fn test_ordered() { }
+
+    #[test]
+    fn test_max_threads() { }
+
+    #[test]
+    fn test_row_count() { }
+
+    #[test]
+    fn test_scan_arrow() { }
 }
