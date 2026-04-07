@@ -443,20 +443,9 @@ mod tests {
     use crate::dtype::vx_dtype_get_variant;
     use crate::dtype::vx_dtype_variant;
     use crate::error::vx_error_free;
-    use crate::error::vx_error_get_message;
     use crate::expression::vx_expression_free;
     use crate::string::vx_string_free;
-
-    fn assert_no_error(error: *mut vx_error) {
-        if !error.is_null() {
-            let message;
-            unsafe {
-                message = vx_string::as_str(vx_error_get_message(error)).to_owned();
-                vx_error_free(error);
-            }
-            panic!("{message}");
-        }
-    }
+    use crate::tests::assert_no_error;
 
     #[test]
     // TODO(joe): enable once this is fixed https://github.com/Amanieu/parking_lot/issues/477

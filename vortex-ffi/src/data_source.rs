@@ -86,6 +86,7 @@ pub type vx_glob = Option<
 >;
 
 #[repr(C)]
+#[cfg_attr(test, derive(Default))]
 /// Host must either implement all or none of fs_* callbacks.
 pub struct vx_data_source_options {
     pub files: *const c_char,
@@ -144,6 +145,7 @@ pub unsafe extern "C-unwind" fn vx_data_source_dtype(ds: *const vx_data_source) 
 }
 
 #[repr(C)]
+#[cfg_attr(test, derive(PartialEq, Debug))]
 enum vx_cardinality {
     VX_CARD_UNKNOWN = 0,
     VX_CARD_ESTIMATE = 1,
@@ -173,6 +175,95 @@ pub unsafe extern "C-unwind" fn vx_data_source_get_row_count(
         }
         None => {
             rc.cardinality = vx_cardinality::VX_CARD_UNKNOWN;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+    use std::ptr;
+
+    use vortex::dtype::DType;
+    use vortex::dtype::PType;
+
+    use crate::data_source::vx_cardinality;
+    use crate::data_source::vx_data_source_dtype;
+    use crate::data_source::vx_data_source_free;
+    use crate::data_source::vx_data_source_get_row_count;
+    use crate::data_source::vx_data_source_new;
+    use crate::data_source::vx_data_source_options;
+    use crate::data_source::vx_data_source_row_count;
+    use crate::dtype::vx_dtype;
+    use crate::session::vx_session_free;
+    use crate::session::vx_session_new;
+    use crate::tests::assert_error;
+    use crate::tests::assert_no_error;
+    use crate::tests::write_sample;
+
+    #[test]
+    fn create_datasource_invalid() {
+        unsafe {
+            let session = vx_session_new();
+            let mut error = ptr::null_mut();
+
+            let ds = vx_data_source_new(ptr::null_mut(), ptr::null(), &raw mut error);
+            assert_error(error);
+            assert!(ds.is_null());
+
+            let ds = vx_data_source_new(session, ptr::null(), &raw mut error);
+            assert_error(error);
+            assert!(ds.is_null());
+
+            let mut opts = vx_data_source_options::default();
+            let ds = vx_data_source_new(session, &raw const opts, &raw mut error);
+            assert_error(error);
+            assert!(ds.is_null());
+
+            opts.files = c"test.vortex".as_ptr();
+            let ds = vx_data_source_new(session, &raw const opts, &raw mut error);
+            assert_error(error);
+            assert!(ds.is_null());
+
+            opts.files = c"*.vortex".as_ptr();
+            let ds = vx_data_source_new(session, &raw const opts, &raw mut error);
+            assert_error(error);
+            assert!(ds.is_null());
+
+            vx_session_free(session);
+        }
+    }
+
+    #[test]
+    fn datasource_row_count() {
+        unsafe {
+            let session = vx_session_new();
+            let sample = write_sample(session);
+
+            let path = CString::new(sample.path().to_str().unwrap()).unwrap();
+            let opts = vx_data_source_options {
+                files: path.as_ptr(),
+                ..Default::default()
+            };
+
+            let mut error = ptr::null_mut();
+            let ds = vx_data_source_new(session, &raw const opts, &raw mut error);
+            assert_no_error(error);
+            assert!(!ds.is_null());
+
+            let dtype = vx_dtype::as_ref(vx_data_source_dtype(ds));
+            assert_eq!(dtype, &DType::Primitive(PType::I32, false.into()));
+
+            let mut row_count = vx_data_source_row_count {
+                cardinality: vx_cardinality::VX_CARD_UNKNOWN,
+                rows: 0,
+            };
+            vx_data_source_get_row_count(ds, &raw mut row_count);
+            assert_eq!(row_count.cardinality, vx_cardinality::VX_CARD_MAXIMUM);
+            assert_eq!(row_count.rows, 3);
+
+            vx_data_source_free(ds);
+            vx_session_free(session);
         }
     }
 }

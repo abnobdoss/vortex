@@ -126,9 +126,6 @@ TEST_CASE("Creating datasources", "[datasource]") {
     ds = vx_data_source_new(session, &opts, &error);
     REQUIRE(ds == nullptr);
     REQUIRE(error != nullptr);
-    // TODO Object store error: Generic LocalFileSystem error: Unable to walk dir: File
-    // system loop found: /dev/fd/6 points to an ancestor /
-    // REQUIRE_THAT(to_string(error), ContainsSubstring("No such file or directory"));
     vx_error_free(error);
 
     TempPath file = write_sample(session, fs::current_path() / "empty.vortex");
@@ -149,7 +146,7 @@ TEST_CASE("Creating datasources", "[datasource]") {
     vx_session_free(session);
 }
 
-TEST_CASE("Write file", "[datasource]") {
+TEST_CASE("Write file", "[sink]") {
     vx_session *session = vx_session_new();
     TempPath path = write_sample(session, fs::current_path() / "write-file.vortex");
     vx_session_free(session);
