@@ -7,14 +7,18 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use arrow_array::ffi::FFI_ArrowSchema;
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use futures::StreamExt;
+use vortex::array::arrow::ArrowArrayExecutor;
 use vortex::array::expr::stats::Precision;
 use vortex::array::stream::SendableArrayStream;
 use vortex::buffer::Buffer;
 use vortex::error::VortexResult;
+use vortex::error::vortex_bail;
 use vortex::expr::root;
 use vortex::io::runtime::BlockingRuntime;
+use vortex::layout::scan::arrow::RecordBatchIteratorAdapter;
 use vortex::scan::DataSourceScan;
 use vortex::scan::Partition;
 use vortex::scan::PartitionStream;
@@ -24,9 +28,9 @@ use vortex::scan::selection::Selection;
 use crate::RUNTIME;
 use crate::array::vx_array;
 use crate::data_source::vx_data_source;
+use crate::error::try_or;
 use crate::error::try_or_default;
 use crate::error::vx_error;
-use crate::error::write_error;
 use crate::expression::vx_expression;
 
 pub enum VxScanState {
@@ -174,7 +178,7 @@ pub unsafe extern "C-unwind" fn vx_data_source_scan(
     estimate: *mut vx_estimate,
     err: *mut *mut vx_error,
 ) -> *mut vx_scan {
-    try_or_default(err, || {
+    try_or(err, ptr::null_mut(), || {
         let request = scan_request(options)?;
         RUNTIME.block_on(async {
             let scan = vx_data_source::as_ref(data_source).scan(request).await?;
@@ -194,7 +198,26 @@ pub unsafe extern "C-unwind" fn vx_data_source_scan(
     })
 }
 
+/// Get scan's schema as ArrowSchema.
+/// On success, returns 0. On error, returns 1 and sets err.
 #[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn vx_scan_arrow_schema(
+    scan: *const vx_scan,
+    schema: *mut FFI_ArrowSchema,
+    err: *mut *mut vx_error,
+) -> c_int {
+    try_or(err, 1, || {
+        let scan = vx_scan::as_ref(scan).lock().unwrap();
+        let VxScanState::Pending(ref scan) = *scan else {
+            vortex_bail!("can't get schema after scan is started");
+        };
+        let arrow_schema = scan.dtype().to_arrow_schema()?;
+        let arrow_schema = FFI_ArrowSchema::try_from(&arrow_schema)?;
+        unsafe { ptr::write(schema, arrow_schema) };
+        Ok(0)
+    })
+}
+
 /// Get next owned partition out of a scan request.
 /// Caller must free this partition using vx_partition_free.
 /// This method is thread-safe.
@@ -202,6 +225,7 @@ pub unsafe extern "C-unwind" fn vx_data_source_scan(
 /// worker thread per partition.
 /// Returns NULL and doesn't set err on exhaustion.
 /// Returns NULL and sets err on error.
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_scan_next(
     scan: *mut vx_scan,
     err: *mut *mut vx_error,
@@ -243,35 +267,69 @@ pub unsafe extern "C-unwind" fn vx_partition_row_count(
     partition: *const vx_partition,
     count: *mut vx_estimate,
     err: *mut *mut vx_error,
-) {
-    let partition = vx_partition::as_ref(partition);
-    let VxPartitionScan::Pending(partition) = partition else {
-        write_error(
-            err,
-            "can't get row count of a partition that's already started",
-        );
-        return;
-    };
-    write_estimate(partition.row_count(), unsafe { &mut *count })
+) -> c_int {
+    try_or(err, 1, || {
+        let partition = vx_partition::as_ref(partition);
+        let VxPartitionScan::Pending(partition) = partition else {
+            vortex_bail!("Can't get partition row count: partition already being consumed");
+        };
+        write_estimate(partition.row_count(), unsafe { &mut *count });
+        Ok(0)
+    })
 }
 
 /// Scan partition contents to ArrowArrayStream. This function consumes
 /// partition fully. Subsequent calls to vx_partition_scan_arrow or
 /// vx_partition_next are undefined behaviour.
 ///
+/// If this function errors, you can't free or reuse partition.
+///
 /// Caller still needs to free partition after calling this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
-    partition: *const vx_partition,
+    partition: *mut vx_partition,
     stream: *mut FFI_ArrowArrayStream,
     err: *mut *mut vx_error,
-) {
-    write_error(err, "failed to scan partition to Arrow");
+) -> c_int {
+    return 1;
+    //try_or(err, 1, || {
+    //    let ptr = partition as *mut VxPartitionScan;
+    //    let owned = unsafe { ptr::read(ptr) };
+    //    let partition = match owned {
+    //        VxPartitionScan::Pending(partition) => partition,
+    //        _ => vortex_bail!(
+    //            "Can't consume partition into ArrowArrayStream: partition already being consumed"
+    //        ),
+    //    };
+    //    let array_stream = partition.execute()?;
+    //    let dtype = array_stream.dtype();
+
+    //    let schema = dtype.to_arrow_schema()?;
+    //    let schema = Arc::new(schema);
+    //    let data_type = DataType::Struct(schema.fields().clone());
+
+    //    let iter = array_stream.map(|chunk| {
+    //        let chunk = chunk?;
+    //        let mut ctx = session.create_execution_ctx();
+    //        let arrow = chunk.execute_arrow(Some(dtype), ctx)?;
+    //        Ok(RecordBatch::from(arrow.as_struct().clone()))
+    //        to_record_batch(chunk, &data_type, &mut ctx)
+    //    });
+
+    //    let reader = RecordBatchIteratorAdapter::new(iter, Arc::new(arrow_schema));
+    //    let arrow_stream = FFI_ArrowArrayStream::new(Box::new(reader));
+    //    unsafe {
+    //        ptr::write(stream, arrow_stream);
+    //        ptr::write(ptr, VxPartitionScan::Started(array_stream));
+    //    };
+
+    //    Ok(0)
+    //})
 }
 
-#[unsafe(no_mangle)]
 /// Get next vx_array out of this partition.
 /// Thread-unsafe.
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_next(
     partition: *mut vx_partition,
     err: *mut *mut vx_error,

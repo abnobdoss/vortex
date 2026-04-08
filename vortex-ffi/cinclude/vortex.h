@@ -512,8 +512,6 @@ typedef struct {
     const vx_array *array;
 } vx_validity;
 
-typedef int (*vx_fs_use_vortex)(const char *schema, const char *path);
-
 typedef void (*vx_fs_set_userdata)(void *userdata);
 
 typedef void (*vx_fs_open)(void *userdata, const char *path, vx_error **err);
@@ -550,12 +548,6 @@ typedef void (*vx_glob)(const char *glob, vx_glob_callback callback, vx_error **
  */
 typedef struct {
     const char *files;
-    /**
-     * Whether to use Vortex filesystem or host's filesystem.
-     * Return 1 to use Vortex for a given schema ("file", "s3") and path.
-     * Return 0 to use host's filesystem.
-     */
-    vx_fs_use_vortex fs_use_vortex;
     vx_fs_set_userdata fs_set_userdata;
     vx_fs_open fs_open;
     vx_fs_create fs_create;
@@ -636,7 +628,7 @@ typedef struct {
 } vx_file_scan_options;
 
 typedef struct {
-    uint64_t *idx;
+    const uint64_t *idx;
     size_t idx_len;
     vx_scan_selection_include include;
 } vx_scan_selection;
@@ -884,6 +876,10 @@ const vx_data_source *vx_data_source_clone(const vx_data_source *ptr);
  */
 void vx_data_source_free(const vx_data_source *ptr);
 
+extern void __lsan_disable(void);
+
+extern void __lsan_enable(void);
+
 /**
  * Create a new owned datasource which must be freed by the caller
  */
@@ -1086,6 +1082,8 @@ vx_expression *vx_expression_root(void);
  * expression. Child expression must have a DTYPE_STRUCT dtype. Errors in
  * vx_array_apply if the child expression doesn't have a specified field.
  *
+ * Returns a DTYPE_STRUCT array with selected fields.
+ *
  * Example:
  *
  * vx_expression* root = vx_expression_root();
@@ -1155,7 +1153,9 @@ vx_expression *vx_expression_is_null(const vx_expression *child);
  * Errors in vx_array_apply if the root array doesn't have a specified field.
  *
  * Accesses the specified field from the result of the child expression.
- * Equivalent to select(&item, 1, child).
+ *
+ * Example: if child is Struct { name=u8, age=u16 } and we do
+ * vx_expression_get_item("name", child), output type will be DTYPE_U8
  */
 vx_expression *vx_expression_get_item(const char *item, const vx_expression *child);
 
@@ -1234,10 +1234,23 @@ void vx_scan_free(vx_scan *ptr);
  */
 void vx_partition_free(vx_partition *ptr);
 
+/**
+ * Create a new owned data source scan which must be freed by the caller.
+ * Scan can be consumed only once.
+ * Returns NULL and sets err on error.
+ * options may not be NULL.
+ * If estimate is not NULL, return estimate on the number of partitions.
+ */
 vx_scan *vx_data_source_scan(const vx_data_source *data_source,
                              const vx_scan_options *options,
                              vx_estimate *estimate,
                              vx_error **err);
+
+/**
+ * Get scan's schema as ArrowSchema.
+ * On success, returns 0. On error, returns 1 and sets err.
+ */
+int vx_scan_arrow_schema(const vx_scan *scan, FFI_ArrowSchema *schema, vx_error **err);
 
 /**
  * Get next owned partition out of a scan request.
@@ -1250,20 +1263,24 @@ vx_scan *vx_data_source_scan(const vx_data_source *data_source,
  */
 vx_partition *vx_scan_next(vx_scan *scan, vx_error **err);
 
-void vx_partition_row_count(const vx_partition *partition, vx_estimate *count, vx_error **err);
+int vx_partition_row_count(const vx_partition *partition, vx_estimate *count, vx_error **err);
 
-void vx_partition_scan_arrow(const vx_partition *_partition, FFI_ArrowArrayStream *_stream, vx_error **err);
+/**
+ * Scan partition contents to ArrowArrayStream. This function consumes
+ * partition fully. Subsequent calls to vx_partition_scan_arrow or
+ * vx_partition_next are undefined behaviour.
+ *
+ * If this function errors, you can't free or reuse partition.
+ *
+ * Caller still needs to free partition after calling this function.
+ */
+int vx_partition_scan_arrow(vx_partition *partition, FFI_ArrowArrayStream *stream, vx_error **err);
 
 /**
  * Get next vx_array out of this partition.
  * Thread-unsafe.
  */
 const vx_array *vx_partition_next(vx_partition *partition, vx_error **err);
-
-/**
- * Scan progress between 0.0 and 1.0
- */
-double vx_scan_progress(const vx_scan *_scan);
 
 /**
  * Free an owned [`vx_session`] object.

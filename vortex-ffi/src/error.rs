@@ -45,6 +45,23 @@ pub fn try_or_default<T: Default>(
     }
 }
 
+pub fn try_or<T>(
+    error_out: *mut *mut vx_error,
+    error_value: T,
+    function: impl FnOnce() -> VortexResult<T>,
+) -> T {
+    match function() {
+        Ok(value) => {
+            unsafe { error_out.write(ptr::null_mut()) };
+            value
+        }
+        Err(err) => {
+            write_error(error_out, &err.to_string());
+            error_value
+        }
+    }
+}
+
 /// Returns the error message from the given Vortex error.
 ///
 /// The returned pointer is valid as long as the error is valid.

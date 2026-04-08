@@ -101,9 +101,9 @@ UniqueSchema sample_schema() {
     REQUIRE(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT) == NANOARROW_OK);
     REQUIRE(ArrowSchemaAllocateChildren(schema.get(), 2) == NANOARROW_OK);
     REQUIRE(ArrowSchemaInitFromType(schema->children[0], NANOARROW_TYPE_UINT8) == NANOARROW_OK);
-    REQUIRE(ArrowSchemaSetName(schema->children[0], "name") == NANOARROW_OK);
+    REQUIRE(ArrowSchemaSetName(schema->children[0], "age") == NANOARROW_OK);
     REQUIRE(ArrowSchemaInitFromType(schema->children[1], NANOARROW_TYPE_UINT16) == NANOARROW_OK);
-    REQUIRE(ArrowSchemaSetName(schema->children[1], "age") == NANOARROW_OK);
+    REQUIRE(ArrowSchemaSetName(schema->children[1], "height") == NANOARROW_OK);
     return schema;
 }
 
@@ -467,6 +467,21 @@ TEST_CASE("Project single field", "[projection]") {
     }
 }
 
+void compare_schemas(const UniqueSchema& left, const UniqueSchema& right) {
+    REQUIRE(std::string_view{left->format} == std::string_view{right->format});
+    REQUIRE(left->n_children == right->n_children);
+    for (int64_t i = 0; i < left->n_children; i++) {
+        std::string_view name_left = left->children[i]->name;
+        std::string_view name_right = right->children[i]->name;
+        REQUIRE(name_left == name_right);
+        compare_schemas(left->children[i], right->children[i]);
+    }
+}
+
+void compare_schema_with_sample(const UniqueSchema& left) {
+    compare_schemas(left, sample_schema());
+}
+
 void compare_stream_with_sample(UniqueArrayStream& left) {
     UniqueArrayStream right = sample_array_stream();
     UniqueSchema schema_right = sample_schema();
@@ -517,6 +532,36 @@ void compare_stream_with_sample(UniqueArrayStream& left) {
     }
 }
 
+TEST_CASE("Scan Arrow schema", "[scan]") {
+    vx_session *session = vx_session_new();
+    defer { vx_session_free(session); };
+
+    TempPath path = write_sample(session, fs::current_path() / "arrow-scan-schema.vortex");
+    vx_error *error = nullptr;
+
+    vx_data_source_options ds_options = {};
+    ds_options.files = path.c_str();
+
+    const vx_data_source *ds = vx_data_source_new(session, &ds_options, &error);
+    require_no_error(error);
+    REQUIRE(ds != nullptr);
+    defer { vx_data_source_free(ds); };
+
+    vx_scan *scan = vx_data_source_scan(ds, nullptr, nullptr, &error);
+    require_no_error(error);
+    REQUIRE(scan != nullptr);
+    defer { vx_scan_free(scan); };
+
+    ArrowSchema schema;
+    int res = vx_scan_arrow_schema(scan, &schema, &error);
+    REQUIRE(res == 0);
+    require_no_error(error);
+
+    UniqueSchema unique_schema;
+    ArrowSchemaMove(&schema, unique_schema.get());
+    compare_schema_with_sample(unique_schema);
+}
+
 TEST_CASE("Scan to Arrow", "[scan]") {
     vx_session *session = vx_session_new();
     defer { vx_session_free(session); };
@@ -544,7 +589,8 @@ TEST_CASE("Scan to Arrow", "[scan]") {
     UniqueArrayStream unique_stream;
     {
         ArrowArrayStream stream = {};
-        vx_partition_scan_arrow(partition, &stream, &error);
+        int res = vx_partition_scan_arrow(partition, &stream, &error);
+        REQUIRE(res == 0);
         require_no_error(error);
         ArrowArrayStreamMove(&stream, unique_stream.get());
     }
