@@ -553,7 +553,12 @@ TEST_CASE("Scan Arrow schema", "[scan]") {
     defer { vx_scan_free(scan); };
 
     ArrowSchema schema;
-    int res = vx_scan_arrow_schema(scan, &schema, &error);
+    const vx_dtype* dtype = vx_scan_dtype(scan, &error);
+    require_no_error(error);
+    REQUIRE(dtype != nullptr);
+    defer { vx_dtype_free(dtype); };
+
+    int res = vx_dtype_to_arrow_schema(dtype, &schema, &error);
     REQUIRE(res == 0);
     require_no_error(error);
 
@@ -589,7 +594,7 @@ TEST_CASE("Scan to Arrow", "[scan]") {
     UniqueArrayStream unique_stream;
     {
         ArrowArrayStream stream = {};
-        int res = vx_partition_scan_arrow(partition, &stream, &error);
+        int res = vx_partition_scan_arrow(session, partition, &stream, &error);
         REQUIRE(res == 0);
         require_no_error(error);
         ArrowArrayStreamMove(&stream, unique_stream.get());

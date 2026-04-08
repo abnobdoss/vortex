@@ -1038,7 +1038,11 @@ uint8_t vx_dtype_time_unit(const DType *dtype);
  */
 const vx_string *vx_dtype_time_zone(const DType *dtype);
 
-void vx_type_to_arrow_schema(const vx_dtype *_dtype, FFI_ArrowSchema *_schema, vx_error **_err);
+/**
+ * Convert a dtype to ArrowSchema.
+ * On success, returns 0. On error, sets err and returns 1.
+ */
+int vx_dtype_to_arrow_schema(const vx_dtype *dtype, FFI_ArrowSchema *schema, vx_error **err);
 
 /**
  * Free an owned [`vx_error`] object.
@@ -1247,10 +1251,12 @@ vx_scan *vx_data_source_scan(const vx_data_source *data_source,
                              vx_error **err);
 
 /**
- * Get scan's schema as ArrowSchema.
- * On success, returns 0. On error, returns 1 and sets err.
+ * Get scan's dtype.
+ * On success, returns 0.
+ * On error, returns 1 and sets err.
+ * You can't request a dtype of a scan that's already started.
  */
-int vx_scan_arrow_schema(const vx_scan *scan, FFI_ArrowSchema *schema, vx_error **err);
+const vx_dtype *vx_scan_dtype(const vx_scan *scan, vx_error **err);
 
 /**
  * Get next owned partition out of a scan request.
@@ -1274,7 +1280,10 @@ int vx_partition_row_count(const vx_partition *partition, vx_estimate *count, vx
  *
  * Caller still needs to free partition after calling this function.
  */
-int vx_partition_scan_arrow(vx_partition *partition, FFI_ArrowArrayStream *stream, vx_error **err);
+int vx_partition_scan_arrow(const vx_session *session,
+                            vx_partition *partition,
+                            FFI_ArrowArrayStream *stream,
+                            vx_error **err);
 
 /**
  * Get next vx_array out of this partition.

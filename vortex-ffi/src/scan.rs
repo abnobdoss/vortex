@@ -14,6 +14,9 @@ use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use arrow_schema::ArrowError;
 use arrow_schema::DataType;
 use futures::StreamExt;
+use vortex::array::ArrayRef;
+use vortex::array::ExecutionCtx;
+use vortex::array::VortexSessionExecute;
 use vortex::array::arrow::ArrowArrayExecutor;
 use vortex::array::expr::stats::Precision;
 use vortex::array::stream::SendableArrayStream;
@@ -28,18 +31,16 @@ use vortex::scan::Partition;
 use vortex::scan::PartitionStream;
 use vortex::scan::ScanRequest;
 use vortex::scan::selection::Selection;
-use vortex::array::VortexSessionExecute;
-use vortex::array::ArrayRef;
-use vortex::array::ExecutionCtx;
 
-use crate::session::vx_session;
 use crate::RUNTIME;
 use crate::array::vx_array;
 use crate::data_source::vx_data_source;
+use crate::dtype::vx_dtype;
 use crate::error::try_or;
 use crate::error::try_or_default;
 use crate::error::vx_error;
 use crate::expression::vx_expression;
+use crate::session::vx_session;
 
 pub enum VxScanState {
     Pending(Box<dyn DataSourceScan>),
@@ -205,23 +206,20 @@ pub unsafe extern "C-unwind" fn vx_data_source_scan(
     })
 }
 
-/// Get scan's schema as ArrowSchema.
-/// On success, returns 0. On error, returns 1 and sets err.
+/// Return an owned dtype of the scan.
+/// On error, returns NULL and sets err.
+/// You can't request a dtype of a scan that's already started.
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn vx_scan_arrow_schema(
+pub unsafe extern "C-unwind" fn vx_scan_dtype(
     scan: *const vx_scan,
-    schema: *mut FFI_ArrowSchema,
     err: *mut *mut vx_error,
-) -> c_int {
-    try_or(err, 1, || {
+) -> *const vx_dtype {
+    try_or(err, ptr::null(), || {
         let scan = vx_scan::as_ref(scan).lock().unwrap();
         let VxScanState::Pending(ref scan) = *scan else {
-            vortex_bail!("can't get schema after scan is started");
+            vortex_bail!("can't get dtype after scan is started");
         };
-        let arrow_schema = scan.dtype().to_arrow_schema()?;
-        let arrow_schema = FFI_ArrowSchema::try_from(&arrow_schema)?;
-        unsafe { ptr::write(schema, arrow_schema) };
-        Ok(0)
+        Ok(vx_dtype::new(Arc::new(scan.dtype().clone())))
     })
 }
 
@@ -380,6 +378,7 @@ mod tests {
     use std::ptr;
 
     use vortex::array::arrays::StructArray;
+    use vortex::expr::lit;
     use vortex_array::assert_arrays_eq;
 
     use crate::array::vx_array;
@@ -388,16 +387,20 @@ mod tests {
     use crate::data_source::vx_data_source_new;
     use crate::data_source::vx_data_source_options;
     use crate::expression::vx_binary_operator;
+    use crate::expression::vx_expression;
     use crate::expression::vx_expression_binary;
     use crate::expression::vx_expression_free;
     use crate::expression::vx_expression_get_item;
     use crate::expression::vx_expression_root;
     use crate::scan::vx_data_source_scan;
+    use crate::scan::vx_estimate;
     use crate::scan::vx_partition_free;
     use crate::scan::vx_partition_next;
+    use crate::scan::vx_partition_row_count;
     use crate::scan::vx_scan_free;
     use crate::scan::vx_scan_next;
     use crate::scan::vx_scan_options;
+    use crate::scan::vx_scan_selection_include;
     use crate::session::vx_session_free;
     use crate::session::vx_session_new;
     use crate::tests::assert_no_error;
@@ -510,27 +513,126 @@ mod tests {
         }
     }
 
-    //#[test]
-    //fn test_filter() { }
+    #[test]
+    fn test_filter() {
+        unsafe {
+            let root = vx_expression_root();
+            let age_expr = vx_expression_get_item(c"age".as_ptr(), root);
+            let lit_100 = vx_expression::new(Box::new(lit(100u64)));
+            let filter =
+                vx_expression_binary(vx_binary_operator::VX_OPERATOR_GTE, age_expr, lit_100);
 
-    //#[test]
-    //fn test_filter_project() { }
+            let mut opts = vx_scan_options::default();
+            opts.filter = filter;
+            let (array, _) = scan(&raw const opts);
+            assert_eq!(vx_array::as_ref(array).len(), 100);
 
-    //#[test]
-    //fn test_row_range() { }
+            vx_array_free(array);
+            vx_expression_free(filter);
+            vx_expression_free(age_expr);
+            vx_expression_free(lit_100);
+            vx_expression_free(root);
+        }
+    }
 
-    //#[test]
-    //fn test_selection() { }
+    #[test]
+    fn test_filter_project() {
+        unsafe {
+            let root = vx_expression_root();
+            let age_expr = vx_expression_get_item(c"age".as_ptr(), root);
+            let lit_100 = vx_expression::new(Box::new(lit(100u64)));
+            let filter =
+                vx_expression_binary(vx_binary_operator::VX_OPERATOR_GTE, age_expr, lit_100);
+            let age_proj = vx_expression_get_item(c"age".as_ptr(), root);
 
-    //#[test]
-    //fn test_limit() { }
+            let mut opts = vx_scan_options::default();
+            opts.filter = filter;
+            opts.projection = age_proj;
+            let (array, _) = scan(&raw const opts);
+            assert_eq!(vx_array::as_ref(array).len(), 100);
 
-    //#[test]
-    //fn test_ordered() { }
+            vx_array_free(array);
+            vx_expression_free(filter);
+            vx_expression_free(age_expr);
+            vx_expression_free(lit_100);
+            vx_expression_free(age_proj);
+            vx_expression_free(root);
+        }
+    }
 
-    //#[test]
-    //fn test_max_threads() { }
+    #[test]
+    fn test_row_range() {
+        let mut opts = vx_scan_options::default();
+        opts.row_range_begin = 50;
+        opts.row_range_end = 100;
+        let (array, _) = scan(&raw const opts);
+        assert_eq!(vx_array::as_ref(array).len(), 50);
+        unsafe { vx_array_free(array) };
+    }
 
-    //#[test]
-    //fn test_row_count() { }
+    #[test]
+    fn test_selection() {
+        let indices = [0u64, 50, 100, 150, 199];
+        let mut opts = vx_scan_options::default();
+        opts.selection.idx = indices.as_ptr();
+        opts.selection.idx_len = indices.len();
+        opts.selection.include = vx_scan_selection_include::VX_S_INCLUDE_RANGE;
+        let (array, _) = scan(&raw const opts);
+        assert_eq!(vx_array::as_ref(array).len(), indices.len());
+        unsafe { vx_array_free(array) };
+    }
+
+    #[test]
+    fn test_limit() {
+        let mut opts = vx_scan_options::default();
+        opts.limit = 50;
+        let (array, _) = scan(&raw const opts);
+        assert_eq!(vx_array::as_ref(array).len(), 50);
+        unsafe { vx_array_free(array) };
+    }
+
+    #[test]
+    fn test_ordered() {
+        let mut opts = vx_scan_options::default();
+        opts.ordered = 1;
+        let (array, struct_array) = scan(&raw const opts);
+        assert_arrays_eq!(vx_array::as_ref(array), struct_array);
+        unsafe { vx_array_free(array) };
+    }
+
+    #[test]
+    fn test_row_count() {
+        unsafe {
+            let session = vx_session_new();
+            let (sample, _) = write_sample(session);
+            let path = CString::new(sample.path().to_str().unwrap()).unwrap();
+            let ds_options = vx_data_source_options {
+                files: path.as_ptr(),
+                ..Default::default()
+            };
+
+            let mut error = ptr::null_mut();
+            let ds = vx_data_source_new(session, &raw const ds_options, &raw mut error);
+            assert_no_error(error);
+
+            let mut error = ptr::null_mut();
+            let scan_ptr = vx_data_source_scan(ds, ptr::null(), ptr::null_mut(), &raw mut error);
+            assert_no_error(error);
+
+            let mut error = ptr::null_mut();
+            let partition = vx_scan_next(scan_ptr, &raw mut error);
+            assert_no_error(error);
+            assert!(!partition.is_null());
+
+            let mut count: vx_estimate = std::mem::zeroed();
+            let result = vx_partition_row_count(partition, &raw mut count, &raw mut error);
+            assert_no_error(error);
+            assert_eq!(result, 0);
+
+            vx_partition_free(partition);
+            vx_scan_free(scan_ptr);
+            vx_data_source_free(ds);
+            vx_session_free(session);
+        }
+    }
 }
