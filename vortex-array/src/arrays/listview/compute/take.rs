@@ -17,7 +17,6 @@ use crate::dtype::Nullability;
 use crate::match_each_integer_ptype;
 use crate::scalar::Scalar;
 
-// TODO(connor)[ListView]: Make use of this threshold after we start migrating operators.
 /// The threshold for triggering a rebuild of the [`ListViewArray`].
 ///
 /// By default, we will not touch the underlying `elements` array of the [`ListViewArray`] since it
@@ -26,8 +25,7 @@ use crate::scalar::Scalar;
 /// However, we also do not want to carry around a large amount of garbage data. Below this
 /// threshold of the density of the selection mask, we will rebuild the [`ListViewArray`], removing
 /// any garbage data.
-#[allow(unused)]
-const REBUILD_DENSITY_THRESHOLD: f64 = 0.1;
+const REBUILD_DENSITY_THRESHOLD: f32 = 0.1;
 
 /// [`ListViewArray`] take implementation.
 ///
@@ -46,6 +44,14 @@ impl TakeReduce for ListView {
         let elements = array.elements();
         let offsets = array.offsets();
         let sizes = array.sizes();
+
+        // We're trying approximate how many elemtns are included in the output ListView.
+        // This helps when we want to export the ListView (to e.g. duckdb) by exporting all of its parts
+        // and don't want to export a lot of unused elements; for example when exporting to duckdb.
+        let used_elements = indices.len() as f32;
+        if used_elements / sizes.len() as f32 > REBUILD_DENSITY_THRESHOLD {
+            return Ok(None);
+        }
 
         // Compute the new validity by combining the array's validity with the indices' validity.
         let new_validity = array.validity()?.take(indices)?;
