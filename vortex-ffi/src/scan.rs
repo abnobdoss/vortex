@@ -9,7 +9,6 @@ use std::sync::Mutex;
 
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
-use arrow_array::ffi::FFI_ArrowSchema;
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use arrow_schema::ArrowError;
 use arrow_schema::DataType;
@@ -321,6 +320,15 @@ pub unsafe extern "C-unwind" fn vx_partition_row_count(
     })
 }
 
+// Scan partition to ArrowArrayStream.
+// Consumes partition fully: subsequent calls to vx_partition_scan_arrow or
+// vx_partition_next are undefined behaviour.
+// This call blocks current thread until underlying stream is fully consumed.
+//
+// Caller doesn't have to free partition after calling this function.
+//
+// On success, sets "stream" and returns 0.
+// On error, sets "err" and returns 1, freeing the partition.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
     session: *const vx_session,
@@ -328,43 +336,41 @@ pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
     stream: *mut FFI_ArrowArrayStream,
     err: *mut *mut vx_error,
 ) -> c_int {
-    return 1;
-    //try_or(err, 1, || {
-    //    let ptr = partition as *mut VxPartitionScan;
-    //    let owned = unsafe { ptr::read(ptr) };
-    //    let partition = match owned {
-    //        VxPartitionScan::Pending(partition) => partition,
-    //        _ => vortex_bail!(
-    //            "Can't consume partition into ArrowArrayStream: partition already being consumed"
-    //        ),
-    //    };
-    //    unsafe { ptr::write(ptr, VxPartitionScan::Finished); };
-    //    let array_stream = partition.execute()?;
-    //    let dtype = array_stream.dtype();
+    try_or(err, 1, || {
+        let partition = match *vx_partition::into_box(partition) {
+            VxPartitionScan::Pending(partition) => partition,
+            _ => vortex_bail!(
+                "Can't consume partition into ArrowArrayStream: partition already being consumed"
+            ),
+        };
+        let array_stream = partition.execute()?;
+        let dtype = array_stream.dtype();
 
-    //    let schema = dtype.to_arrow_schema()?;
-    //    let schema = Arc::new(schema);
-    //    let data_type = DataType::Struct(schema.fields().clone());
+        let schema = dtype.to_arrow_schema()?;
+        let schema = Arc::new(schema);
+        let data_type = DataType::Struct(schema.fields().clone());
 
-    //    let session = vx_session::as_ref(session);
+        let session = vx_session::as_ref(session);
 
-    //    let on_chunk = move |chunk: VortexResult<ArrayRef>| -> VortexResult<RecordBatch> {
-    //        let chunk: ArrayRef = chunk?;
-    //        let mut ctx: ExecutionCtx = session.create_execution_ctx();
-    //        let arrow = chunk.execute_arrow(Some(&data_type), &mut ctx)?;
-    //        Ok(RecordBatch::from(arrow.as_struct().clone()))
-    //    };
+        let on_chunk = move |chunk: VortexResult<ArrayRef>| -> VortexResult<RecordBatch> {
+            let chunk: ArrayRef = chunk?;
+            let mut ctx: ExecutionCtx = session.create_execution_ctx();
+            let arrow = chunk.execute_arrow(Some(&data_type), &mut ctx)?;
+            Ok(RecordBatch::from(arrow.as_struct().clone()))
+        };
 
-    //    let iter: Result<RecordBatch, ArrowError> = array_stream
-    //        .map(on_chunk)
-    //        .into_iter(&*RUNTIME)?
-    //        .map(|result| result.map_err(|e| ArrowError::ExternalError(Box::new(e))));
+        let iter = RUNTIME
+            .block_on_stream(array_stream)
+            .map(on_chunk)
+            .map(|result| result.map_err(|e| ArrowError::ExternalError(Box::new(e))));
 
-    //    let reader = RecordBatchIteratorAdapter::new(iter, schema);
-    //    let arrow_stream = FFI_ArrowArrayStream::new(Box::new(reader));
-    //    unsafe { ptr::write(stream, arrow_stream); };
-    //    Ok(0)
-    //})
+        let reader = RecordBatchIteratorAdapter::new(iter, schema);
+        let arrow_stream = FFI_ArrowArrayStream::new(Box::new(reader));
+        unsafe {
+            ptr::write(stream, arrow_stream);
+        };
+        Ok(0)
+    })
 }
 
 /// Return an owned owned array from a partition.

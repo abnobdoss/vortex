@@ -589,7 +589,6 @@ TEST_CASE("Scan to Arrow", "[scan]") {
     vx_partition *partition = vx_scan_next(scan, &error);
     require_no_error(error);
     REQUIRE(partition != nullptr);
-    defer { vx_partition_free(partition); };
 
     UniqueArrayStream unique_stream;
     {
