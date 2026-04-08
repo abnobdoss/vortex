@@ -22,10 +22,10 @@ use crate::session::vx_session;
 use crate::to_string;
 
 crate::arc_dyn_wrapper!(
-    /// A data source is a reference to multiple possibly remote files. When
-    /// created, it opens first file to determine the schema from DType, all
-    /// other operations are deferred till a scan is requested. You can request
-    /// multiple file scans from a data source
+    /// A reference to one or more (possibly remote) files.
+    /// Creating vx_data_source opens the first matched file to read the schema.
+    /// All other I/O is deferred until a scan is requested. Multiple scans may
+    /// be requested from a single data source.
     dyn DataSource,
     vx_data_source);
 
@@ -85,10 +85,14 @@ pub type vx_glob = Option<
     unsafe extern "C" fn(glob: *const c_char, callback: vx_glob_callback, err: *mut *mut vx_error),
 >;
 
+/// Options for creating a data source.
+///
+/// "files" is the only required field.
+/// If any "fs_*" callback is provided, all of them must be provided.
 #[repr(C)]
 #[cfg_attr(test, derive(Default))]
-/// Host must either implement all or none of fs_* callbacks.
 pub struct vx_data_source_options {
+    /// Required: files names. May be a glob pattern like "*.vortex".
     pub files: *const c_char,
     pub fs_set_userdata: vx_fs_set_userdata,
     pub fs_open: vx_fs_open,
@@ -145,7 +149,12 @@ unsafe fn data_source_new(
     ds
 }
 
-/// Create a new owned datasource which must be freed by the caller
+/// Create a data source.
+/// The first matched file is opened eagerly. to read the schema. All other I/O
+/// is deferred until a scan is requested. The returned pointer is owned by the
+/// caller and must be freed with vx_data_source_free.
+///
+/// On error, sets "err" and returns NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_data_source_new(
     session: *const vx_session,
@@ -155,10 +164,9 @@ pub unsafe extern "C-unwind" fn vx_data_source_new(
     try_or_default(err, || unsafe { data_source_new(session, opts) })
 }
 
+/// Return the schema of the data source as a non-owned dtype.
+/// The returned pointer is valid as long as "ds" is alive. Do not free it.
 #[unsafe(no_mangle)]
-/// Create a non-owned dtype referencing dataframe.
-/// This dtype's lifetime is bound to underlying data source.
-/// Caller should not free this dtype.
 pub unsafe extern "C-unwind" fn vx_data_source_dtype(ds: *const vx_data_source) -> *const vx_dtype {
     vx_dtype::new_ref(vx_data_source::as_ref(ds).dtype())
 }
@@ -174,15 +182,17 @@ enum vx_cardinality {
 #[repr(C)]
 pub struct vx_data_source_row_count {
     cardinality: vx_cardinality,
+    /// Set only when "cardinality" is not VX_CARD_UNKNOWN
     rows: u64,
 }
 
+/// Write data source's row count estimate into "row_count".
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_data_source_get_row_count(
     ds: *const vx_data_source,
-    rc: *mut vx_data_source_row_count,
+    row_count: *mut vx_data_source_row_count,
 ) {
-    let rc = unsafe { &mut *rc };
+    let rc = unsafe { &mut *row_count };
     match vx_data_source::as_ref(ds).row_count() {
         Some(Exact(rows)) => {
             rc.cardinality = vx_cardinality::VX_CARD_MAXIMUM;

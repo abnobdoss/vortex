@@ -56,53 +56,75 @@ pub enum VxPartitionScan {
     Finished,
 }
 crate::box_wrapper!(
-    /// A Partition is a unit of work for a worker thread from which you can
-    /// get vx_arrays.
+    /// A partition is an independent unit of work. Call vx_partition_next repeatedly to
+    /// retrieve arrays, then free the partition with vx_partition_free.
     VxPartitionScan,
     vx_partition);
 
-#[repr(C)]
 // We parse Selection from vx_scan_selection[_include], so we don't need
 // to instantiate VX_S_* items directly.
+#[repr(C)]
 #[allow(dead_code)]
 #[cfg_attr(test, derive(Default))]
 pub enum vx_scan_selection_include {
     #[cfg_attr(test, default)]
     VX_S_INCLUDE_ALL = 0,
+    /// Include rows at the indices in vx_scan_selection.idx.
     VX_S_INCLUDE_RANGE = 1,
+    /// Exclude rows at the indices in vx_scan_selection.idx.
     VX_S_EXCLUDE_RANGE = 2,
 }
 
+/// Scan row selection.
+/// "idx" is copied while calling vx_data_source_scan and can be freed after.
 #[repr(C)]
 #[cfg_attr(test, derive(Default))]
 pub struct vx_scan_selection {
+    /// Used only when "include" is not VX_S_INCLUDE_ALL.
+    /// If set, must point to an array of len "idx_len" row_indices.
     pub idx: *const u64,
+    /// Used only when "include" is not VX_S_INCLUDE_ALL.
     pub idx_len: usize,
     pub include: vx_scan_selection_include,
 }
 
+/// Scan options. All fields are optional. To return everything,
+/// zero-initialize this struct.
 #[repr(C)]
 #[cfg_attr(test, derive(Default))]
 pub struct vx_scan_options {
+    /// What columns to return. NULL means all columns.
     pub projection: *const vx_expression,
+    /// Predicate expression. NULL means no filter.
     pub filter: *const vx_expression,
+    /// Row range [begin, end). Setting row_range_begin and row_range_end to 0
+    /// means no limit.
     pub row_range_begin: u64,
     pub row_range_end: u64,
+    /// Row-index filter applied after row_range.
     pub selection: vx_scan_selection,
+    /// Maximum number of rows to return. 0 means no limit.
     pub limit: u64,
+    /// Upper limit for parallelism. 0 means no limit.
+    /// Scan will return at most "max_threads" partitions.
     pub max_threads: u64,
-    pub ordered: c_int,
+    /// If true, return in storage order.
+    pub ordered: bool,
 }
 
 #[repr(C)]
 pub enum vx_estimate_boundary {
+    /// No estimate is available.
     VX_ESTIMATE_UNKNOWN = 0,
+    /// The value in vx_estimate.estimate is exact.
     VX_ESTIMATE_EXACT = 1,
+    /// The value in vx_estimate.estimate is an upper bound.
     VX_ESTIMATE_INEXACT = 2,
 }
 
 #[repr(C)]
 pub struct vx_estimate {
+    /// Set only when "type" is not VX_ESTIMATE_UNKNOWN.
     estimate: u64,
     r#type: vx_estimate_boundary,
 }
@@ -140,7 +162,7 @@ fn scan_request(opts: *const vx_scan_options) -> VortexResult<ScanRequest> {
         }
     };
 
-    let ordered = opts.ordered == 1;
+    let ordered = opts.ordered;
 
     let start = opts.row_range_begin;
     let end = opts.row_range_end;
@@ -174,12 +196,19 @@ fn write_estimate<T: Into<u64>>(estimate: Option<Precision<T>>, out: &mut vx_est
     }
 }
 
+/// Scan a data source.
+///
+/// Return an owned scan that must be freed with vx_scan_free. A scan may be
+/// consumed only once.
+///
+/// "options" and "estimate" may be NULL.
+///
+/// If "options" is NULL, all rows and columns are returned.
+/// If "estimate" is not NULL, the estimated partition count is written to
+/// *estimate before returning.
+///
+/// Returns NULL and writes an error to "*err" on failure.
 #[unsafe(no_mangle)]
-/// Create a new owned data source scan which must be freed by the caller.
-/// Scan can be consumed only once.
-/// Returns NULL and sets err on error.
-/// options may not be NULL.
-/// If estimate is not NULL, return estimate on the number of partitions.
 pub unsafe extern "C-unwind" fn vx_data_source_scan(
     data_source: *const vx_data_source,
     options: *const vx_scan_options,
@@ -206,30 +235,34 @@ pub unsafe extern "C-unwind" fn vx_data_source_scan(
     })
 }
 
-/// Return an owned dtype of the scan.
-/// On error, returns NULL and sets err.
-/// You can't request a dtype of a scan that's already started.
+/// Scan's dtype.
+/// Must be called before first call to vx_scan_next.
+/// On error returns NULL and sets "err".
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_scan_dtype(
     scan: *const vx_scan,
     err: *mut *mut vx_error,
 ) -> *const vx_dtype {
     try_or(err, ptr::null(), || {
-        let scan = vx_scan::as_ref(scan).lock().unwrap();
+        let scan = vx_scan::as_ref(scan).lock().expect("failed to lock mutex");
         let VxScanState::Pending(ref scan) = *scan else {
-            vortex_bail!("can't get dtype after scan is started");
+            vortex_bail!("dtype unavailable: scan already started");
         };
         Ok(vx_dtype::new(Arc::new(scan.dtype().clone())))
     })
 }
 
-/// Get next owned partition out of a scan request.
-/// Caller must free this partition using vx_partition_free.
-/// This method is thread-safe.
-/// If using in a sync multi-thread runtime, users are encouraged to create a
-/// worker thread per partition.
-/// Returns NULL and doesn't set err on exhaustion.
-/// Returns NULL and sets err on error.
+/// Return an owned partition from a scan.
+/// The returned partition must be freed with vx_partition_free.
+///
+/// On success returns a partition.
+/// On exhaustion (no more partitions in scan) returns NULL but doesn't set
+/// "err".
+/// On error returns NULL and sets "err".
+///
+/// This function is thread-safe: callers running a multi-threaded pipeline
+/// should call it concurrently and dispatch each partition to a dedicated
+/// worker thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_scan_next(
     scan: *mut vx_scan,
@@ -267,6 +300,11 @@ pub unsafe extern "C-unwind" fn vx_scan_next(
     }
 }
 
+/// Get partition's estimated row count.
+/// Must be called before the first call to vx_partition_next.
+///
+/// On success, returns 0.
+/// On error, return 1 and sets "error".
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_row_count(
     partition: *const vx_partition,
@@ -276,20 +314,13 @@ pub unsafe extern "C-unwind" fn vx_partition_row_count(
     try_or(err, 1, || {
         let partition = vx_partition::as_ref(partition);
         let VxPartitionScan::Pending(partition) = partition else {
-            vortex_bail!("Can't get partition row count: partition already being consumed");
+            vortex_bail!("row count unavailable: partition already started");
         };
         write_estimate(partition.row_count(), unsafe { &mut *count });
         Ok(0)
     })
 }
 
-/// Scan partition contents to ArrowArrayStream. This function consumes
-/// partition fully. Subsequent calls to vx_partition_scan_arrow or
-/// vx_partition_next are undefined behaviour.
-///
-/// If this function errors, you can't free or reuse partition.
-///
-/// Caller still needs to free partition after calling this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
     session: *const vx_session,
@@ -336,8 +367,15 @@ pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
     //})
 }
 
-/// Get next vx_array out of this partition.
-/// Thread-unsafe.
+/// Return an owned owned array from a partition.
+/// The returned array must be freed with vx_array_free.
+///
+/// On success returns an array.
+/// On exhaustion (no more arrays in partition) returns NULL but doesn't set
+/// "err".
+/// On error return NULL and sets "err".
+///
+/// This function is not thread-safe: call from one thread per partition.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_next(
     partition: *mut vx_partition,
@@ -403,10 +441,11 @@ mod tests {
     use crate::scan::vx_scan_selection_include;
     use crate::session::vx_session_free;
     use crate::session::vx_session_new;
+    use crate::tests::SAMPLE_ROWS;
     use crate::tests::assert_no_error;
     use crate::tests::write_sample;
 
-    /// Perform a scan with options over a sample file, return read array and
+    /// Perform a scan with options over a sample file, return owned read array and
     /// original generated array for the sample file.
     fn scan(options: *const vx_scan_options) -> (*const vx_array, StructArray) {
         unsafe {
@@ -499,11 +538,14 @@ mod tests {
                 vx_expression_binary(vx_binary_operator::VX_OPERATOR_ADD, expr_age, expr_height);
 
             opts.projection = expr_sum;
-            let (array, struct_array) = scan(&raw const opts);
-            //assert_arrays_eq!(
-            //    vx_array::as_ref(array),
-            //    struct_array.unmasked_field_by_name(field).unwrap()
-            //);
+            let (array, _) = scan(&raw const opts);
+            {
+                let array = vx_array::as_ref(array);
+                let stats = array.statistics();
+                assert!(stats.compute_is_sorted().unwrap());
+                assert_eq!(stats.compute_min(), Some(0));
+                assert_eq!(stats.compute_max(), Some(200 * (SAMPLE_ROWS - 1) + 199));
+            }
             vx_array_free(array);
 
             vx_expression_free(expr_age);
@@ -594,7 +636,7 @@ mod tests {
     #[test]
     fn test_ordered() {
         let mut opts = vx_scan_options::default();
-        opts.ordered = 1;
+        opts.ordered = true;
         let (array, struct_array) = scan(&raw const opts);
         assert_arrays_eq!(vx_array::as_ref(array), struct_array);
         unsafe { vx_array_free(array) };

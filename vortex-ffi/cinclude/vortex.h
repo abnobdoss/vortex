@@ -273,13 +273,28 @@ typedef enum {
 
 typedef enum {
     VX_S_INCLUDE_ALL = 0,
+    /**
+     * Include rows at the indices in vx_scan_selection.idx.
+     */
     VX_S_INCLUDE_RANGE = 1,
+    /**
+     * Exclude rows at the indices in vx_scan_selection.idx.
+     */
     VX_S_EXCLUDE_RANGE = 2,
 } vx_scan_selection_include;
 
 typedef enum {
+    /**
+     * No estimate is available.
+     */
     VX_ESTIMATE_UNKNOWN = 0,
+    /**
+     * The value in vx_estimate.estimate is exact.
+     */
     VX_ESTIMATE_EXACT = 1,
+    /**
+     * The value in vx_estimate.estimate is an upper bound.
+     */
     VX_ESTIMATE_INEXACT = 2,
 } vx_estimate_boundary;
 
@@ -431,10 +446,10 @@ typedef struct vx_array_sink vx_array_sink;
 typedef struct vx_binary vx_binary;
 
 /**
- * A data source is a reference to multiple possibly remote files. When
- * created, it opens first file to determine the schema from DType, all
- * other operations are deferred till a scan is requested. You can request
- * multiple file scans from a data source
+ * A reference to one or more (possibly remote) files.
+ * Creating vx_data_source opens the first matched file to read the schema.
+ * All other I/O is deferred until a scan is requested. Multiple scans may
+ * be requested from a single data source.
  */
 typedef struct vx_data_source vx_data_source;
 
@@ -473,8 +488,8 @@ typedef struct vx_expression vx_expression;
 typedef struct vx_file vx_file;
 
 /**
- * A Partition is a unit of work for a worker thread from which you can
- * get vx_arrays.
+ * A partition is an independent unit of work. Call vx_partition_next repeatedly to
+ * retrieve arrays, then free the partition with vx_partition_free.
  */
 typedef struct vx_partition vx_partition;
 
@@ -544,9 +559,15 @@ typedef void (*vx_glob_callback)(void *userdata, const char *file);
 typedef void (*vx_glob)(const char *glob, vx_glob_callback callback, vx_error **err);
 
 /**
- * Host must either implement all or none of fs_* callbacks.
+ * Options for creating a data source.
+ *
+ * "files" is the only required field.
+ * If any "fs_*" callback is provided, all of them must be provided.
  */
 typedef struct {
+    /**
+     * Required: files names. May be a glob pattern like "*.vortex".
+     */
     const char *files;
     vx_fs_set_userdata fs_set_userdata;
     vx_fs_open fs_open;
@@ -562,6 +583,9 @@ typedef struct {
 
 typedef struct {
     vx_cardinality cardinality;
+    /**
+     * Set only when "cardinality" is not VX_CARD_UNKNOWN
+     */
     uint64_t rows;
 } vx_data_source_row_count;
 
@@ -627,24 +651,65 @@ typedef struct {
     unsigned long row_offset;
 } vx_file_scan_options;
 
+/**
+ * Scan row selection.
+ * "idx" is copied while calling vx_data_source_scan and can be freed after.
+ */
 typedef struct {
+    /**
+     * Used only when "include" is not VX_S_INCLUDE_ALL.
+     * If set, must point to an array of len "idx_len" row_indices.
+     */
     const uint64_t *idx;
+    /**
+     * Used only when "include" is not VX_S_INCLUDE_ALL.
+     */
     size_t idx_len;
     vx_scan_selection_include include;
 } vx_scan_selection;
 
+/**
+ * Scan options. All fields are optional. To return everything,
+ * zero-initialize this struct.
+ */
 typedef struct {
+    /**
+     * What columns to return. NULL means all columns.
+     */
     const vx_expression *projection;
+    /**
+     * Predicate expression. NULL means no filter.
+     */
     const vx_expression *filter;
+    /**
+     * Row range [begin, end). Setting row_range_begin and row_range_end to 0
+     * means no limit.
+     */
     uint64_t row_range_begin;
     uint64_t row_range_end;
+    /**
+     * Row-index filter applied after row_range.
+     */
     vx_scan_selection selection;
+    /**
+     * Maximum number of rows to return. 0 means no limit.
+     */
     uint64_t limit;
+    /**
+     * Upper limit for parallelism. 0 means no limit.
+     * Scan will return at most "max_threads" partitions.
+     */
     uint64_t max_threads;
-    int ordered;
+    /**
+     * If true, return in storage order.
+     */
+    bool ordered;
 } vx_scan_options;
 
 typedef struct {
+    /**
+     * Set only when "type" is not VX_ESTIMATE_UNKNOWN.
+     */
     uint64_t estimate;
     vx_estimate_boundary type;
 } vx_estimate;
@@ -881,19 +946,26 @@ extern void __lsan_disable(void);
 extern void __lsan_enable(void);
 
 /**
- * Create a new owned datasource which must be freed by the caller
+ * Create a data source.
+ * The first matched file is opened eagerly. to read the schema. All other I/O
+ * is deferred until a scan is requested. The returned pointer is owned by the
+ * caller and must be freed with vx_data_source_free.
+ *
+ * On error, sets "err" and returns NULL.
  */
 const vx_data_source *
 vx_data_source_new(const vx_session *session, const vx_data_source_options *opts, vx_error **err);
 
 /**
- * Create a non-owned dtype referencing dataframe.
- * This dtype's lifetime is bound to underlying data source.
- * Caller should not free this dtype.
+ * Return the schema of the data source as a non-owned dtype.
+ * The returned pointer is valid as long as "ds" is alive. Do not free it.
  */
 const vx_dtype *vx_data_source_dtype(const vx_data_source *ds);
 
-void vx_data_source_get_row_count(const vx_data_source *ds, vx_data_source_row_count *rc);
+/**
+ * Write data source's row count estimate into "row_count".
+ */
+void vx_data_source_get_row_count(const vx_data_source *ds, vx_data_source_row_count *row_count);
 
 /**
  * Clone a borrowed [`vx_dtype`], returning an owned [`vx_dtype`].
@@ -1040,6 +1112,7 @@ const vx_string *vx_dtype_time_zone(const DType *dtype);
 
 /**
  * Convert a dtype to ArrowSchema.
+ * You can use the dtype after conversion
  * On success, returns 0. On error, sets err and returns 1.
  */
 int vx_dtype_to_arrow_schema(const vx_dtype *dtype, FFI_ArrowSchema *schema, vx_error **err);
@@ -1239,11 +1312,18 @@ void vx_scan_free(vx_scan *ptr);
 void vx_partition_free(vx_partition *ptr);
 
 /**
- * Create a new owned data source scan which must be freed by the caller.
- * Scan can be consumed only once.
- * Returns NULL and sets err on error.
- * options may not be NULL.
- * If estimate is not NULL, return estimate on the number of partitions.
+ * Scan a data source.
+ *
+ * Return an owned scan that must be freed with vx_scan_free. A scan may be
+ * consumed only once.
+ *
+ * "options" and "estimate" may be NULL.
+ *
+ * If "options" is NULL, all rows and columns are returned.
+ * If "estimate" is not NULL, the estimated partition count is written to
+ * *estimate before returning.
+ *
+ * Returns NULL and writes an error to "*err" on failure.
  */
 vx_scan *vx_data_source_scan(const vx_data_source *data_source,
                              const vx_scan_options *options,
@@ -1251,43 +1331,51 @@ vx_scan *vx_data_source_scan(const vx_data_source *data_source,
                              vx_error **err);
 
 /**
- * Get scan's dtype.
- * On success, returns 0.
- * On error, returns 1 and sets err.
- * You can't request a dtype of a scan that's already started.
+ * Scan's dtype.
+ * Must be called before first call to vx_scan_next.
+ * On error returns NULL and sets "err".
  */
 const vx_dtype *vx_scan_dtype(const vx_scan *scan, vx_error **err);
 
 /**
- * Get next owned partition out of a scan request.
- * Caller must free this partition using vx_partition_free.
- * This method is thread-safe.
- * If using in a sync multi-thread runtime, users are encouraged to create a
- * worker thread per partition.
- * Returns NULL and doesn't set err on exhaustion.
- * Returns NULL and sets err on error.
+ * Return an owned partition from a scan.
+ * The returned partition must be freed with vx_partition_free.
+ *
+ * On success returns a partition.
+ * On exhaustion (no more partitions in scan) returns NULL but doesn't set
+ * "err".
+ * On error returns NULL and sets "err".
+ *
+ * This function is thread-safe: callers running a multi-threaded pipeline
+ * should call it concurrently and dispatch each partition to a dedicated
+ * worker thread.
  */
 vx_partition *vx_scan_next(vx_scan *scan, vx_error **err);
 
+/**
+ * Get partition's estimated row count.
+ * Must be called before the first call to vx_partition_next.
+ *
+ * On success, returns 0.
+ * On error, return 1 and sets "error".
+ */
 int vx_partition_row_count(const vx_partition *partition, vx_estimate *count, vx_error **err);
 
-/**
- * Scan partition contents to ArrowArrayStream. This function consumes
- * partition fully. Subsequent calls to vx_partition_scan_arrow or
- * vx_partition_next are undefined behaviour.
- *
- * If this function errors, you can't free or reuse partition.
- *
- * Caller still needs to free partition after calling this function.
- */
 int vx_partition_scan_arrow(const vx_session *session,
                             vx_partition *partition,
                             FFI_ArrowArrayStream *stream,
                             vx_error **err);
 
 /**
- * Get next vx_array out of this partition.
- * Thread-unsafe.
+ * Return an owned owned array from a partition.
+ * The returned array must be freed with vx_array_free.
+ *
+ * On success returns an array.
+ * On exhaustion (no more arrays in partition) returns NULL but doesn't set
+ * "err".
+ * On error return NULL and sets "err".
+ *
+ * This function is not thread-safe: call from one thread per partition.
  */
 const vx_array *vx_partition_next(vx_partition *partition, vx_error **err);
 

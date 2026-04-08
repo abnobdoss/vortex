@@ -147,7 +147,7 @@ mod tests {
         let age = (0..SAMPLE_ROWS as u64).map(|x| Some(x));
         let age = PrimitiveArray::from_option_iter(age.into_iter());
 
-        let height = (0..SAMPLE_ROWS as u64).map(|x| Some(200 - x));
+        let height = (0..SAMPLE_ROWS as u64).map(|x| Some(200 * x));
         let height = PrimitiveArray::from_option_iter(height);
 
         let name = (0..SAMPLE_ROWS).map(|x| random_str(x.try_into().unwrap()));
