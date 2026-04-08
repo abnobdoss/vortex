@@ -130,14 +130,17 @@ fn take_listview(
 ) -> ListViewArray {
     let codes_ref = codes.clone().into_array();
     let array = array.as_view();
-    // Canonicalization always wants a materialized (compacted) result, so we go straight to
-    // `TakeExecute`. The density heuristic in `TakeReduce` is only relevant on the optimizer
-    // path where we'd otherwise keep the `Take` node in the tree.
-    <ListView as TakeExecute>::take(array, &codes_ref, ctx)
-        .vortex_expect("take listview array")
-        .vortex_expect("take listview should not return None")
-        .as_::<ListView>()
-        .into_owned()
+    // Try the cheap metadata-only path first; fall back to the rebuilding execute path when the
+    // reduce impl declines (see `ListView::TakeReduce` for the density heuristic).
+    let taken = match <ListView as TakeReduce>::take(array, &codes_ref)
+        .vortex_expect("take listview reduce")
+    {
+        Some(taken) => taken,
+        None => <ListView as TakeExecute>::take(array, &codes_ref, ctx)
+            .vortex_expect("take listview execute")
+            .vortex_expect("ListView TakeExecute should not return None"),
+    };
+    taken.as_::<ListView>().into_owned()
 }
 
 fn take_fixed_size_list(
