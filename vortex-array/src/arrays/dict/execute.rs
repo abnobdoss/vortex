@@ -46,7 +46,7 @@ pub fn take_canonical(
         Canonical::Primitive(a) => Canonical::Primitive(take_primitive(&a, codes, ctx)),
         Canonical::Decimal(a) => Canonical::Decimal(take_decimal(&a, codes, ctx)),
         Canonical::VarBinView(a) => Canonical::VarBinView(take_varbinview(&a, codes, ctx)),
-        Canonical::List(a) => Canonical::List(take_listview(&a, codes, ctx)?),
+        Canonical::List(a) => Canonical::List(take_listview(&a, codes, ctx)),
         Canonical::FixedSizeList(a) => {
             Canonical::FixedSizeList(take_fixed_size_list(&a, codes, ctx))
         }
@@ -127,17 +127,17 @@ fn take_listview(
     array: &ListViewArray,
     codes: &PrimitiveArray,
     ctx: &mut ExecutionCtx,
-) -> VortexResult<ListViewArray> {
+) -> ListViewArray {
     let codes_ref = codes.clone().into_array();
     let array = array.as_view();
-    // Try the cheap metadata-only path first; fall back to the rebuilding execute path when the
-    // reduce impl declines (see `ListView::TakeReduce` for the density heuristic).
-    let taken = match <ListView as TakeReduce>::take(array, &codes_ref)? {
-        Some(taken) => taken,
-        None => <ListView as TakeExecute>::take(array, &codes_ref, ctx)?
-            .vortex_expect("ListView TakeExecute should not return None"),
-    };
-    Ok(taken.as_::<ListView>().into_owned())
+    // Canonicalization always wants a materialized (compacted) result, so we go straight to
+    // `TakeExecute`. The density heuristic in `TakeReduce` is only relevant on the optimizer
+    // path where we'd otherwise keep the `Take` node in the tree.
+    <ListView as TakeExecute>::take(array, &codes_ref, ctx)
+        .vortex_expect("take listview array")
+        .vortex_expect("take listview should not return None")
+        .as_::<ListView>()
+        .into_owned()
 }
 
 fn take_fixed_size_list(

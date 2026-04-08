@@ -42,17 +42,18 @@ const REBUILD_DENSITY_THRESHOLD: f32 = 0.1;
 /// The trade-off is that we may keep unreferenced elements in memory, but this is acceptable since
 /// we're optimizing for read performance and the data isn't being copied.
 ///
-/// When the selection density is above [`REBUILD_DENSITY_THRESHOLD`], we return `None` so that the
+/// When the selection density is below [`REBUILD_DENSITY_THRESHOLD`], we return `None` so that the
 /// caller can fall back to [`TakeExecute`], which compacts the `elements` array via a rebuild. We
 /// only want to pay the rebuild cost for sparse selections where dragging around lots of unused
 /// elements would be wasteful; dense selections keep the cheap metadata-only path.
 impl TakeReduce for ListView {
     fn take(array: ArrayView<'_, ListView>, indices: &ArrayRef) -> VortexResult<Option<ArrayRef>> {
-        // We're approximating how many elements are referenced by the output `ListView`. This
-        // helps when we want to export the `ListView` (to e.g. duckdb) by exporting all of its
-        // parts and not dragging along a lot of unused elements.
-        let used_elements = indices.len() as f32;
-        if used_elements / array.sizes().len() as f32 > REBUILD_DENSITY_THRESHOLD {
+        // Approximate element density by the fraction of list rows retained. Assumes roughly
+        // uniform list sizes; good enough to decide whether dragging along the full `elements`
+        // buffer is worth avoiding a rebuild. For sparse selections we return `None` so the
+        // caller can fall back to `TakeExecute` which compacts `elements`.
+        let kept_row_fraction = indices.len() as f32 / array.sizes().len() as f32;
+        if kept_row_fraction < REBUILD_DENSITY_THRESHOLD {
             return Ok(None);
         }
 
