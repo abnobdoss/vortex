@@ -40,7 +40,7 @@ const REBUILD_DENSITY_THRESHOLD: f32 = 0.1;
 /// The trade-off is that we may keep unreferenced elements in memory, but this is acceptable
 /// since we're optimizing for read performance and the data isn't being copied.
 ///
-/// When the selection density drops below [`REBUILD_DENSITY_THRESHOLD`], we return `None` so
+/// When the selection density drops below `REBUILD_DENSITY_THRESHOLD`, we return `None` so
 /// callers can fall back to [`TakeExecute`], which compacts `elements` via a rebuild. Dense
 /// selections keep the cheap metadata-only path.
 impl TakeReduce for ListView {
