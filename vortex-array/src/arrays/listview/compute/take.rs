@@ -19,54 +19,31 @@ use crate::dtype::Nullability;
 use crate::match_each_integer_ptype;
 use crate::scalar::Scalar;
 
-/// The threshold for triggering a rebuild of the [`ListViewArray`].
-///
-/// By default, we will not touch the underlying `elements` array of the [`ListViewArray`] since it
-/// can be potentially expensive to reorganize the array based on what views we have into it.
-///
-/// However, we also do not want to carry around a large amount of garbage data. Below this
-/// threshold of the density of the selection mask, we will rebuild the [`ListViewArray`], removing
-/// any garbage data.
-const REBUILD_DENSITY_THRESHOLD: f32 = 0.1;
-
-/// Metadata-only take for [`ListViewArray`].
+/// Metadata-only take for [`ListViewArray`]. Always returns `Some`.
 ///
 /// This implementation is deliberately simple and read-optimized. We just take the `offsets` and
-/// `sizes` at the requested indices and reuse the original `elements` array. This works because
-/// `ListView` (unlike `List`) allows non-contiguous and out-of-order lists.
+/// `sizes` at the requested indices and reuse the original `elements` buffer as-is. This works
+/// because `ListView` (unlike `List`) allows non-contiguous and out-of-order lists.
 ///
 /// We don't slice the `elements` array because it would require computing min/max offsets and
-/// adjusting all offsets accordingly, which is not really worth the small potential memory we would
-/// be able to get back.
+/// adjusting all offsets accordingly, which is not really worth the small potential memory we
+/// would be able to get back.
 ///
-/// The trade-off is that we may keep unreferenced elements in memory, but this is acceptable since
-/// we're optimizing for read performance and the data isn't being copied.
-///
-/// When the selection density is below [`REBUILD_DENSITY_THRESHOLD`], we return `None` so that the
-/// caller can fall back to [`TakeExecute`], which compacts the `elements` array via a rebuild. We
-/// only want to pay the rebuild cost for sparse selections where dragging around lots of unused
-/// elements would be wasteful; dense selections keep the cheap metadata-only path.
+/// The trade-off is that we may keep unreferenced elements in memory, but this is acceptable
+/// since we're optimizing for read performance and the data isn't being copied. Callers that
+/// need a compacted result should go through [`TakeExecute`] instead.
 impl TakeReduce for ListView {
     fn take(array: ArrayView<'_, ListView>, indices: &ArrayRef) -> VortexResult<Option<ArrayRef>> {
-        // Approximate element density by the fraction of list rows retained. Assumes roughly
-        // uniform list sizes; good enough to decide whether dragging along the full `elements`
-        // buffer is worth avoiding a rebuild. For sparse selections we return `None` so the
-        // caller can fall back to `TakeExecute` which compacts `elements`.
-        let kept_row_fraction = indices.len() as f32 / array.sizes().len() as f32;
-        if kept_row_fraction < REBUILD_DENSITY_THRESHOLD {
-            return Ok(None);
-        }
-
         Ok(Some(take_metadata(array, indices)?.into_array()))
     }
 }
 
 /// Execution-path take for [`ListViewArray`].
 ///
-/// This does the same metadata-only take as [`TakeReduce`], then unconditionally rebuilds the
-/// result via [`ListViewRebuildMode::MakeZeroCopyToList`] so the output does not carry unreferenced
-/// elements from the source. Callers reach this path when [`TakeReduce`] returns `None` (dense
-/// selections) or during `Dict` canonicalization, where we want to materialize a compact result.
+/// This does the same metadata-only take as [`TakeReduce`], then rebuilds the result via
+/// [`ListViewRebuildMode::MakeZeroCopyToList`] so the output does not carry unreferenced elements
+/// from the source. This path is used during `Dict` canonicalization, where we want to
+/// materialize a compacted result.
 impl TakeExecute for ListView {
     fn take(
         array: ArrayView<'_, ListView>,
