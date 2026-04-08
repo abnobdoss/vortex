@@ -27,6 +27,7 @@ use crate::arrays::listview::ListViewArrayExt;
 use crate::arrays::listview::ListViewData;
 use crate::arrays::listview::array::NUM_SLOTS;
 use crate::arrays::listview::array::SLOT_NAMES;
+use crate::arrays::listview::compute::PARENT_KERNELS;
 use crate::arrays::listview::compute::rules::PARENT_RULES;
 use crate::buffer::BufferHandle;
 use crate::dtype::DType;
@@ -213,5 +214,14 @@ impl VTable for ListView {
         child_idx: usize,
     ) -> VortexResult<Option<ArrayRef>> {
         PARENT_RULES.evaluate(array, parent, child_idx)
+    }
+
+    fn execute_parent(
+        array: ArrayView<'_, Self>,
+        parent: &ArrayRef,
+        child_idx: usize,
+        ctx: &mut ExecutionCtx,
+    ) -> VortexResult<Option<ArrayRef>> {
+        PARENT_KERNELS.execute(array, parent, child_idx, ctx)
     }
 }
