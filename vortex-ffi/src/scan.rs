@@ -7,8 +7,12 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray;
 use arrow_array::ffi::FFI_ArrowSchema;
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
+use arrow_schema::ArrowError;
+use arrow_schema::DataType;
 use futures::StreamExt;
 use vortex::array::arrow::ArrowArrayExecutor;
 use vortex::array::expr::stats::Precision;
@@ -24,7 +28,11 @@ use vortex::scan::Partition;
 use vortex::scan::PartitionStream;
 use vortex::scan::ScanRequest;
 use vortex::scan::selection::Selection;
+use vortex::array::VortexSessionExecute;
+use vortex::array::ArrayRef;
+use vortex::array::ExecutionCtx;
 
+use crate::session::vx_session;
 use crate::RUNTIME;
 use crate::array::vx_array;
 use crate::data_source::vx_data_source;
@@ -72,7 +80,6 @@ pub struct vx_scan_selection {
     pub include: vx_scan_selection_include,
 }
 
-// Distinct from ScanRequest for easier option handling from C
 #[repr(C)]
 #[cfg_attr(test, derive(Default))]
 pub struct vx_scan_options {
@@ -287,6 +294,7 @@ pub unsafe extern "C-unwind" fn vx_partition_row_count(
 /// Caller still needs to free partition after calling this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
+    session: *const vx_session,
     partition: *mut vx_partition,
     stream: *mut FFI_ArrowArrayStream,
     err: *mut *mut vx_error,
@@ -301,6 +309,7 @@ pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
     //            "Can't consume partition into ArrowArrayStream: partition already being consumed"
     //        ),
     //    };
+    //    unsafe { ptr::write(ptr, VxPartitionScan::Finished); };
     //    let array_stream = partition.execute()?;
     //    let dtype = array_stream.dtype();
 
@@ -308,21 +317,23 @@ pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
     //    let schema = Arc::new(schema);
     //    let data_type = DataType::Struct(schema.fields().clone());
 
-    //    let iter = array_stream.map(|chunk| {
-    //        let chunk = chunk?;
-    //        let mut ctx = session.create_execution_ctx();
-    //        let arrow = chunk.execute_arrow(Some(dtype), ctx)?;
-    //        Ok(RecordBatch::from(arrow.as_struct().clone()))
-    //        to_record_batch(chunk, &data_type, &mut ctx)
-    //    });
+    //    let session = vx_session::as_ref(session);
 
-    //    let reader = RecordBatchIteratorAdapter::new(iter, Arc::new(arrow_schema));
-    //    let arrow_stream = FFI_ArrowArrayStream::new(Box::new(reader));
-    //    unsafe {
-    //        ptr::write(stream, arrow_stream);
-    //        ptr::write(ptr, VxPartitionScan::Started(array_stream));
+    //    let on_chunk = move |chunk: VortexResult<ArrayRef>| -> VortexResult<RecordBatch> {
+    //        let chunk: ArrayRef = chunk?;
+    //        let mut ctx: ExecutionCtx = session.create_execution_ctx();
+    //        let arrow = chunk.execute_arrow(Some(&data_type), &mut ctx)?;
+    //        Ok(RecordBatch::from(arrow.as_struct().clone()))
     //    };
 
+    //    let iter: Result<RecordBatch, ArrowError> = array_stream
+    //        .map(on_chunk)
+    //        .into_iter(&*RUNTIME)?
+    //        .map(|result| result.map_err(|e| ArrowError::ExternalError(Box::new(e))));
+
+    //    let reader = RecordBatchIteratorAdapter::new(iter, schema);
+    //    let arrow_stream = FFI_ArrowArrayStream::new(Box::new(reader));
+    //    unsafe { ptr::write(stream, arrow_stream); };
     //    Ok(0)
     //})
 }
@@ -522,7 +533,4 @@ mod tests {
 
     //#[test]
     //fn test_row_count() { }
-
-    //#[test]
-    //fn test_scan_arrow() { }
 }
