@@ -200,3 +200,49 @@ mod test {
         test_take_conformance(&array.into_array());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use vortex_buffer::buffer;
+
+    use crate::Canonical;
+    use crate::IntoArray;
+    use crate::LEGACY_SESSION;
+    use crate::VortexSessionExecute;
+    use crate::arrays::PrimitiveArray;
+    use crate::validity::Validity;
+
+    /// Repro for ABA-16 (finding C05): the primitive take kernel reads the raw integer payload
+    /// of a null index before consulting validity.  The scalar path at
+    /// `take_primitive_scalar` calls `buffer[idx.as_()]` unconditionally (see
+    /// `take/mod.rs` — the scalar loop), so a null index whose raw value is out-of-bounds
+    /// causes a panic.  A correct implementation must skip the raw index for null positions
+    /// and produce a null row instead.
+    ///
+    /// This test encodes the EXPECTED (fixed) behaviour.  While the bug is present the
+    /// kernel panics before the assertion is reached, which makes the test fail.
+    #[test]
+    #[ignore = "demonstrates ABA-16; see https://linear.app/abanoubdoss/issue/ABA-16"]
+    fn issue_aba16_primitive_take_null_index_must_not_read_raw_payload() {
+        // Array of length 3; the null index has raw value 100 — far out-of-bounds.
+        // A correct kernel must honour validity and produce a single null row.
+        let values = buffer![1i32, 2, 3].into_array();
+        let indices =
+            PrimitiveArray::new(buffer![100u32], Validity::from_iter([false])).into_array();
+
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+        let taken = values
+            .take(indices)
+            .expect("take should not error on a null index");
+        let canon = taken
+            .execute::<Canonical>(&mut ctx)
+            .expect("canonicalize should not error on a null index");
+        let arr = canon.into_array();
+        assert_eq!(arr.len(), 1, "expected a single-element output");
+        let is_valid = arr.is_valid(0, &mut ctx).expect("is_valid should succeed");
+        assert!(
+            !is_valid,
+            "null index must produce a null row, not a value read from the raw payload"
+        );
+    }
+}
