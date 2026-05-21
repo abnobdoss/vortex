@@ -1187,3 +1187,40 @@ fn test_fits_in_precision_mixed_decimal_value_types() {
     assert!(DecimalValue::I128(99999).fits_in_precision(dtype));
     assert!(!DecimalValue::I256(i256::from_i128(100000)).fits_in_precision(dtype));
 }
+
+/// Regression test for ABA-27: decimal-to-i64 cast must not route through `f64`.
+///
+/// Integer values that fit in `i64` but exceed `2^53` (the largest integer
+/// exactly representable in IEEE-754 binary64) must be preserved by the cast.
+/// Routing through `f64` would silently round such values before the `as i64`
+/// truncation, violating SQL exact-numeric cast semantics.
+///
+/// Probe: 2^53 + 1 = 9_007_199_254_740_993. Its nearest f64 neighbour is
+/// 2^53 = 9_007_199_254_740_992 (round-to-even picks the even value).
+#[test]
+fn issue_aba27_decimal_to_i64_preserves_precision_above_2_53() {
+    let exact_value: i128 = (1_i128 << 53) + 1;
+    assert_eq!(exact_value, 9_007_199_254_740_993_i128, "sanity: 2^53 + 1");
+
+    let src_dtype = DecimalDType::new(38, 0);
+    let scalar = Scalar::decimal(
+        DecimalValue::I128(exact_value),
+        src_dtype,
+        Nullability::NonNullable,
+    );
+
+    let target_dtype = DType::Primitive(PType::I64, Nullability::NonNullable);
+    let casted = scalar
+        .cast(&target_dtype)
+        .expect("decimal-to-i64 cast of an in-range value must not error");
+
+    let got: i64 = (&casted)
+        .try_into()
+        .expect("non-null decimal must cast to a non-null i64");
+
+    assert_eq!(
+        got, 9_007_199_254_740_993_i64,
+        "exact integer raw value must be preserved; if cast routes through f64 \
+         the result is silently rounded to 2^53 = 9_007_199_254_740_992",
+    );
+}
