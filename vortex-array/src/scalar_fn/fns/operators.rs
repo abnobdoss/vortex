@@ -282,3 +282,150 @@ impl<'a> arbitrary::Arbitrary<'a> for CompareOperator {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::scalar_fn::ScalarFnId;
+    use crate::scalar_fn::ScalarFnVTable as _;
+    use crate::scalar_fn::fns::list_contains::ListContains;
+    use crate::scalar_fn::fns::operators::Operator;
+
+    /// Verify that the test harness itself is functional: `ListContains` is the
+    /// scalar fn that the DataFusion converter uses to emulate SQL `IN`, and its
+    /// ID must be stable for the gap probes below to be meaningful.
+    #[test]
+    fn control_list_contains_id_is_stable() {
+        assert_eq!(
+            ListContains.id(),
+            ScalarFnId::new("vortex.list.contains"),
+            "ListContains ScalarFnId changed; update the ABA-31 repro tests"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ABA-31 (a) — No general string scalar functions
+    //
+    // The only string-shaped `scalar_fn::fns` module is `like`.  There are no
+    // public factories in `expr::exprs` for `length`, `substring`, `concat`,
+    // `upper`, `lower`, `replace`, `trim`, etc.  This test documents the
+    // absence: when un-ignored it panics with a detailed diagnostic so that
+    // CI surfaces the gap clearly.
+    // ------------------------------------------------------------------
+    #[test]
+    #[ignore = "demonstrates ABA-31; see https://linear.app/abanoubdoss/issue/ABA-31"]
+    fn issue_aba31_a_general_string_scalar_function_exists() {
+        // Inventory of `scalar_fn::fns` modules as of the commit this test was
+        // written (see `src/scalar_fn/fns/mod.rs`):
+        //   between, binary, case_when, cast, dynamic, fill_null, get_item,
+        //   is_not_null, is_null, like, list_contains, literal, mask, merge,
+        //   not, operators, pack, root, select, stat, variant_get, zip
+        //
+        // None of the following SQL-standard string functions appear as a
+        // `scalar_fn::fns` module or as a factory in `expr::exprs.rs`:
+        let missing: &[&str] = &[
+            "length",
+            "char_length",
+            "octet_length",
+            "substring",
+            "substr",
+            "concat",
+            "upper",
+            "lower",
+            "replace",
+            "trim",
+            "ltrim",
+            "rtrim",
+            "strpos",
+            "starts_with",
+            "ends_with",
+        ];
+        // The only string-shaped operation that exists:
+        let only_string_fn = "like";
+
+        panic!(
+            "ABA-31(a) STILL_MISSING: no general string scalar functions. \
+             The only string op in scalar_fn::fns is `{only_string_fn}`. \
+             None of {missing:?} have a scalar_fn module or expr factory. \
+             Engines pushing down SQL string ops must fall back to canonical \
+             execution. Fix: add scalar_fn::fns modules for at least length, \
+             substring, concat, upper, lower, replace, trim."
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ABA-31 (b) — No unary numeric operator
+    //
+    // `Operator` (this file) enumerates only binary operations.  There is no
+    // `Abs`, `Neg`, `Floor`, `Ceil`, `Round`, `Sign`, or `Sqrt` variant.
+    // The exhaustive `match` below is the structural repro: if upstream ever
+    // adds a unary variant, the match will stop compiling (non-exhaustive),
+    // forcing the author to revisit this test before merging.
+    // ------------------------------------------------------------------
+    #[test]
+    #[ignore = "demonstrates ABA-31; see https://linear.app/abanoubdoss/issue/ABA-31"]
+    fn issue_aba31_b_unary_numeric_operator_exists() {
+        // Exhaustive match over all current Operator variants (12 binary ops).
+        // Adding any new variant — including a unary one — breaks compilation
+        // here, which is the intended signal.
+        let sentinel = Operator::Eq;
+        let _label: &str = match sentinel {
+            Operator::Eq => "Eq",
+            Operator::NotEq => "NotEq",
+            Operator::Gt => "Gt",
+            Operator::Gte => "Gte",
+            Operator::Lt => "Lt",
+            Operator::Lte => "Lte",
+            Operator::And => "And",
+            Operator::Or => "Or",
+            Operator::Add => "Add",
+            Operator::Sub => "Sub",
+            Operator::Mul => "Mul",
+            Operator::Div => "Div",
+        };
+
+        panic!(
+            "ABA-31(b) STILL_MISSING: Operator enum has 12 variants, all binary. \
+             No unary numeric op (Abs, Neg, Floor, Ceil, Round, Sign, Sqrt) is \
+             defined in Operator or as a separate scalar_fn module. The only \
+             existing unary scalar fn is `not` (boolean only). Fix: add a \
+             UnaryOperator enum (or unary variants in Operator) and a \
+             corresponding scalar_fn::fns::unary module."
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // ABA-31 (c) — No native InList operator
+    //
+    // SQL `x IN (a, b, c)` is lowered by `vortex-datafusion/src/convert/
+    // exprs.rs` as `list_contains(lit(List[a,b,c]), x)`.  That conflates
+    // relational set-membership with list-element-containment: a `List`
+    // literal is a single typed value; an SQL IN predicate is a set of
+    // disjuncts amenable to stat-based falsification and separate
+    // optimization.  There is no `InList` scalar_fn module and no
+    // `in_list` factory in `expr::exprs.rs`.
+    // ------------------------------------------------------------------
+    #[test]
+    #[ignore = "demonstrates ABA-31; see https://linear.app/abanoubdoss/issue/ABA-31"]
+    fn issue_aba31_c_native_in_list_operator_exists() {
+        // The only set-membership-adjacent facility that exists today:
+        assert_eq!(
+            ListContains.id(),
+            ScalarFnId::new("vortex.list.contains"),
+            "ListContains ScalarFnId changed; ABA-31(c) probe needs updating"
+        );
+
+        // There is no `vortex.in_list` ScalarFnId anywhere in `scalar_fn::fns/`
+        // (inventoried: same list as ABA-31(a)). The DataFusion converter at
+        // `vortex-datafusion/src/convert/exprs.rs` lines ~251-272 lowers
+        // InListExpr by building a List scalar literal and delegating to
+        // list_contains, which is semantically distinct from set membership.
+        panic!(
+            "ABA-31(c) STILL_MISSING: no native InList scalar fn or in_list \
+             expr factory. SQL `IN (...)` is emulated via \
+             list_contains(lit(List[...]), x) in the DataFusion converter, \
+             losing the relational set-membership semantics needed for stat \
+             falsification. Fix: introduce a dedicated InList scalar_fn and \
+             an in_list factory in expr::exprs.rs."
+        );
+    }
+}
