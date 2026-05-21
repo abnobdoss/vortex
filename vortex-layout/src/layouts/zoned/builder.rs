@@ -491,4 +491,30 @@ mod tests {
             .unwrap();
         assert_eq!(field3_bool.to_bit_buffer(), BitBuffer::from(vec![false]));
     }
+
+    // ABA-13: is_truncated columns must NOT appear for non-string/binary dtypes.
+    #[test]
+    fn issue_aba13_zonemap_skips_is_truncated_for_non_string() -> VortexResult<()> {
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+        let array = buffer![0i64, 1, 2].into_array();
+        let mut acc = StatsAccumulator::new(array.dtype(), &[Stat::Max, Stat::Min, Stat::Sum], 12);
+        acc.push_chunk(&array, &mut ctx)
+            .vortex_expect("push_chunk should succeed for test array");
+        let (stats_table, _) = acc.as_array()?.expect("Must have stats table");
+        let names = stats_table.names();
+        assert!(
+            !names.as_ref().contains(&MAX_IS_TRUNCATED.into()),
+            "i64 column must not have {MAX_IS_TRUNCATED} in stats schema, got: {names:?}",
+        );
+        assert!(
+            !names.as_ref().contains(&MIN_IS_TRUNCATED.into()),
+            "i64 column must not have {MIN_IS_TRUNCATED} in stats schema, got: {names:?}",
+        );
+        assert_eq!(
+            names.as_ref(),
+            &[Stat::Max.name(), Stat::Min.name(), Stat::Sum.name()],
+            "i64 stats schema must be exactly [max, min, sum] without truncation flags",
+        );
+        Ok(())
+    }
 }
