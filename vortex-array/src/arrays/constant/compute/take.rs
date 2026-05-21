@@ -2,12 +2,14 @@
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
 use vortex_error::VortexResult;
+use vortex_error::vortex_ensure;
 use vortex_mask::AllOr;
 
 use crate::ArrayRef;
 use crate::IntoArray;
 use crate::LEGACY_SESSION;
 use crate::VortexSessionExecute;
+use crate::aggregate_fn::fns::min_max::min_max;
 use crate::array::ArrayView;
 use crate::arrays::Constant;
 use crate::arrays::ConstantArray;
@@ -21,6 +23,18 @@ use crate::validity::Validity;
 impl TakeReduce for Constant {
     fn take(array: ArrayView<'_, Constant>, indices: &ArrayRef) -> VortexResult<Option<ArrayRef>> {
         let mut ctx = LEGACY_SESSION.create_execution_ctx();
+
+        // Bounds-check the VALID index values against the source length.
+        // `min_max` skips nulls, so a null position with a garbage raw value
+        // does not trip this check. `usize::try_from` rejects negative
+        // signed indices, mirroring `Primitive::take`'s contract.
+        if let Some(mm) = min_max(indices, &mut ctx)? {
+            let min_idx = usize::try_from(&mm.min)?;
+            let max_idx = usize::try_from(&mm.max)?;
+            vortex_ensure!(min_idx < array.len(), OutOfBounds: min_idx, 0, array.len());
+            vortex_ensure!(max_idx < array.len(), OutOfBounds: max_idx, 0, array.len());
+        }
+
         let result = match indices
             .validity()?
             .execute_mask(indices.len(), &mut ctx)?
@@ -166,7 +180,6 @@ mod tests {
     /// from every other take kernel (e.g. `Primitive::take`, which rejects
     /// such indices).
     #[test]
-    #[ignore = "ABA-17 — fixed in a follow-up commit; un-ignore once the fix lands"]
     fn issue_aba17_take_must_reject_oob_indices() -> vortex_error::VortexResult<()> {
         let array = ConstantArray::new(42i32, 10).into_array();
 
