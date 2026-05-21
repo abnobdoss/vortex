@@ -113,9 +113,15 @@ fn max_lloyd_centroids(dimension: u32, bit_width: u8) -> Buffer<f32> {
     // For the marginal distribution on [-1, 1], we use the exponent (d-3)/2.
     let exponent = HalfIntExponent::from_numerator(dimension as i32 - 3);
 
-    // Initialize centroids uniformly on [-1, 1].
+    // Initialize centroids uniformly on [-W, W], where W tracks the support of
+    // the marginal pdf (1 - x^2)^((d-3)/2). The pdf has effective std-dev
+    // sigma = 1/sqrt(d), so for d >> 36 (i.e. W < 1) a uniform [-1, 1] init
+    // leaves every cell outside |x| ~ 0.1 with pdf underflowing to zero at every
+    // trapezoidal sample, the `denominator < 1e-30` guard below trips, and
+    // those centroids never move. See vortex#7245.
+    let init_half_width = (6.0 / f64::from(dimension).sqrt()).min(1.0);
     let mut centroids: Vec<f64> = (0..num_centroids)
-        .map(|idx| -1.0 + (2.0 * (idx as f64) + 1.0) / (num_centroids as f64))
+        .map(|idx| init_half_width * (-1.0 + (2.0 * (idx as f64) + 1.0) / (num_centroids as f64)))
         .collect();
 
     let mut boundaries: Vec<f64> = vec![0.0; num_centroids + 1];
@@ -362,10 +368,7 @@ mod tests {
         let centroids = compute_or_get_centroids(dim, bit_width)?;
         assert_eq!(centroids.len(), 4, "expected 4 centroids for bit_width=2");
 
-        let max_abs = centroids
-            .iter()
-            .map(|c| c.abs())
-            .fold(0.0_f32, f32::max);
+        let max_abs = centroids.iter().map(|c| c.abs()).fold(0.0_f32, f32::max);
 
         assert!(
             max_abs < 0.5,
