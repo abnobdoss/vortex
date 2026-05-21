@@ -163,10 +163,15 @@ impl<'a> DecimalScalar<'a> {
                             Scalar::primitive(v, *nullability)
                         }
                         PType::I64 => {
-                            let v = actual_value as i64;
-                            if actual_value < i64::MIN as f64 || actual_value > i64::MAX as f64 {
-                                vortex_bail!("Decimal value {} out of range for i64", actual_value);
-                            }
+                            // Cast directly from the i128 coefficient to avoid the `f64`
+                            // intermediate, which silently rounds integer magnitudes above
+                            // 2^53 even when the value fits in i64. Matches Apache Arrow's
+                            // `cast_decimal_to_integer`: divide on the integer, then
+                            // range-check against the target type via `i64::try_from`.
+                            let integer_value = scaled_value / scale_factor;
+                            let v = i64::try_from(integer_value).map_err(|_| {
+                                vortex_err!("Decimal value {} out of range for i64", integer_value)
+                            })?;
                             Scalar::primitive(v, *nullability)
                         }
                         PType::F16 => {
