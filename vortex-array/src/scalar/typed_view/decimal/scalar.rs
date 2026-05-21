@@ -15,6 +15,7 @@ use vortex_error::vortex_panic;
 use crate::dtype::DType;
 use crate::dtype::DecimalDType;
 use crate::dtype::PType;
+use crate::dtype::i256;
 use crate::match_each_decimal_value;
 use crate::scalar::DecimalValue;
 use crate::scalar::NumericOperator;
@@ -219,6 +220,15 @@ impl<'a> DecimalScalar<'a> {
             other.dtype
         };
 
+        // Compute 10^scale for mul/div compensation.
+        // scale() returns i8; negative scale is not supported for mul/div (return None).
+        let scale = self.decimal_type.scale();
+        let scale_factor: Option<i256> = if scale >= 0 {
+            i256::from_i128(10).checked_pow(scale as u32)
+        } else {
+            None
+        };
+
         // Handle null cases using SQL semantics
         let result_value = match (self.decimal_value, other.decimal_value) {
             (None, _) | (_, None) => None,
@@ -227,8 +237,16 @@ impl<'a> DecimalScalar<'a> {
                 let operation_result = match op {
                     NumericOperator::Add => lhs.checked_add(&rhs),
                     NumericOperator::Sub => lhs.checked_sub(&rhs),
-                    NumericOperator::Mul => lhs.checked_mul(&rhs),
-                    NumericOperator::Div => lhs.checked_div(&rhs),
+                    // Mul: raw result = (lhs_raw * rhs_raw) / 10^scale
+                    NumericOperator::Mul => {
+                        let sf = DecimalValue::I256(scale_factor?);
+                        lhs.checked_mul(&rhs)?.checked_div(&sf)
+                    }
+                    // Div: raw result = (lhs_raw * 10^scale) / rhs_raw
+                    NumericOperator::Div => {
+                        let sf = DecimalValue::I256(scale_factor?);
+                        lhs.checked_mul(&sf)?.checked_div(&rhs)
+                    }
                 }?;
 
                 // Check if the result fits within the precision constraints

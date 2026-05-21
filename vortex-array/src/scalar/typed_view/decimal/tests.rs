@@ -813,6 +813,9 @@ fn test_decimal_scalar_checked_sub() {
 fn test_decimal_scalar_checked_mul() {
     use crate::scalar::NumericOperator;
 
+    // scale=2: values 50 and 10 represent 0.50 and 0.10.
+    // Correct result: 0.50 * 0.10 = 0.050, raw = 5 (not 500 which was the pre-fix buggy value).
+    // Formula: (50 * 10) / 10^2 = 500 / 100 = 5.
     let decimal1 = Scalar::decimal(
         DecimalValue::I32(50),
         DecimalDType::new(10, 2),
@@ -832,7 +835,7 @@ fn test_decimal_scalar_checked_mul() {
         .unwrap();
     assert_eq!(
         result.decimal_value(),
-        Some(DecimalValue::I256(i256::from_i128(500)))
+        Some(DecimalValue::I256(i256::from_i128(5)))
     );
 }
 
@@ -840,6 +843,9 @@ fn test_decimal_scalar_checked_mul() {
 fn test_decimal_scalar_checked_div() {
     use crate::scalar::NumericOperator;
 
+    // scale=2: values 1000 and 10 represent 10.00 and 0.10.
+    // Correct result: 10.00 / 0.10 = 100.00, raw = 10000 (not 100 which was the pre-fix buggy value).
+    // Formula: (1000 * 10^2) / 10 = 100000 / 10 = 10000.
     let decimal1 = Scalar::decimal(
         DecimalValue::I64(1000),
         DecimalDType::new(10, 2),
@@ -859,7 +865,7 @@ fn test_decimal_scalar_checked_div() {
         .unwrap();
     assert_eq!(
         result.decimal_value(),
-        Some(DecimalValue::I256(i256::from_i128(100)))
+        Some(DecimalValue::I256(i256::from_i128(10000)))
     );
 }
 
