@@ -211,4 +211,44 @@ mod tests {
     fn test_take_sliced_runend_conformance(#[case] sliced: ArrayRef) {
         test_take_conformance(&sliced);
     }
+
+    /// Repro for ABA-16 (finding C05): the RunEnd take kernel checks every raw index value
+    /// against `array.len()` before consulting validity.  A null take-index whose raw value
+    /// is 100 (array length is 12) triggers `vortex_bail!(OutOfBounds: 100, 0, 12)` even
+    /// though the user explicitly marked that position null.  Validity is only attached
+    /// after the bounds check, so the kernel errors before it can honour the null.
+    /// A correct implementation must skip the bounds check for null positions and produce
+    /// a null row instead.
+    ///
+    /// This test encodes the EXPECTED (fixed) behaviour.  While the bug is present the
+    /// kernel returns `Err(OutOfBounds)`, which makes the test fail.
+    #[test]
+    #[ignore = "demonstrates ABA-16; see https://linear.app/abanoubdoss/issue/ABA-16"]
+    fn issue_aba16_runend_take_null_index_must_not_read_raw_payload() {
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+
+        // 12-element run-end array; null index raw value 100 is out-of-bounds.
+        let ree = ree_array();
+        assert_eq!(ree.len(), 12);
+
+        let indices = PrimitiveArray::new(
+            buffer![100u32],
+            vortex_array::validity::Validity::from_iter([false]),
+        )
+        .into_array();
+
+        let taken = ree
+            .take(indices)
+            .expect("take should not error on a null index");
+        let canon = taken
+            .execute::<Canonical>(&mut ctx)
+            .expect("canonicalize should not error on a null index");
+        let arr = canon.into_array();
+        assert_eq!(arr.len(), 1, "expected a single-element output");
+        let is_valid = arr.is_valid(0, &mut ctx).expect("is_valid should succeed");
+        assert!(
+            !is_valid,
+            "null index must produce a null row, not an OutOfBounds error"
+        );
+    }
 }

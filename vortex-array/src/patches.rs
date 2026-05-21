@@ -2216,4 +2216,44 @@ mod test {
             SearchResult::NotFound(1)
         );
     }
+
+    /// Repro for ABA-16 (finding C05): `Patches::take_map` calls `usize::try_from(take_idx)` at
+    /// the top of its loop body, before the `is_null` check.  A null take-index whose raw value
+    /// is `i64::MIN` therefore converts to the error "Failed to convert index to usize" and
+    /// `take_map` returns `Err` even though the user explicitly marked that position null.
+    /// A correct implementation must check validity first and skip the raw-index conversion
+    /// for null positions.
+    ///
+    /// This test encodes the EXPECTED (fixed) behaviour.  While the bug is present `take_map`
+    /// returns `Err`, which makes the test fail.
+    #[test]
+    #[ignore = "demonstrates ABA-16; see https://linear.app/abanoubdoss/issue/ABA-16"]
+    fn issue_aba16_patches_take_null_index_must_not_read_raw_payload() {
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+
+        // A Patches with one entry at position 3, value 99, over an array of length 10.
+        let patches = Patches::new(
+            10,
+            0,
+            buffer![3u64].into_array(),
+            buffer![99i32].into_array(),
+            None,
+        )
+        .expect("Patches::new with valid single-patch input");
+
+        // A single null take-index whose raw value is i64::MIN — cannot fit in usize.
+        let take_indices = PrimitiveArray::new(buffer![i64::MIN], Validity::from_iter([false]));
+
+        // `take_map` must skip the raw-index conversion for null positions and return
+        // `Ok(None)` (no patched positions in the output) or `Ok(Some(_))` with a null value.
+        // What it must NOT do is return `Err("Failed to convert index to usize")`.
+        let result = patches
+            .take_map(take_indices, true, &mut ctx)
+            .expect("take_map must not error on a null take-index with a negative raw value");
+
+        // `include_nulls = true` so a null patch position may be present, but is optional
+        // depending on whether the implementation records null positions.  Either Ok(None) or
+        // Ok(Some(...)) is acceptable; only Err is the bug.
+        drop(result);
+    }
 }

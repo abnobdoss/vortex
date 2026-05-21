@@ -314,4 +314,47 @@ mod test {
         use vortex_array::compute::conformance::take::test_take_conformance;
         test_take_conformance(&bitpacked.into_array());
     }
+
+    /// Repro for ABA-16 (finding C05): the bitpacked take kernel feeds every raw index value
+    /// (including null-index garbage) into `chunked_indices` before consulting validity.
+    /// A null index whose raw value is 2 000 (well past the 32-element array) drives an
+    /// out-of-bounds chunk lookup and panics with `vortex_expect("index must be expressible as
+    /// usize")` or a Rust slice OOB.  A correct implementation must skip null indices and
+    /// produce a null row.
+    ///
+    /// `indices.len() * UNPACK_CHUNK_THRESHOLD` = 1 * 8 = 8, which is less than `array.len()`
+    /// = 32, so the bitpacked path (not the fallback primitive path) is exercised.
+    ///
+    /// This test encodes the EXPECTED (fixed) behaviour.  While the bug is present the
+    /// kernel panics before the assertion is reached, which makes the test fail.
+    #[test]
+    #[ignore = "demonstrates ABA-16; see https://linear.app/abanoubdoss/issue/ABA-16"]
+    fn issue_aba16_bitpacked_take_null_index_must_not_read_raw_payload() {
+        use vortex_array::Canonical;
+
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+
+        // 32-element bitpacked array encoded at 5 bits.
+        let values = PrimitiveArray::from_iter(0u32..32).into_array();
+        let bitpacked =
+            BitPackedData::encode(&values, 5, &mut ctx).expect("encode 0..32 at 5 bits");
+
+        // Null index with raw value 2000 — far beyond chunk 0 of the packed buffer.
+        let indices =
+            PrimitiveArray::new(buffer![2000u32], Validity::from_iter([false])).into_array();
+
+        let taken = bitpacked
+            .take(indices)
+            .expect("take should not error on a null index");
+        let canon = taken
+            .execute::<Canonical>(&mut ctx)
+            .expect("canonicalize should not error on a null index");
+        let arr = canon.into_array();
+        assert_eq!(arr.len(), 1, "expected a single-element output");
+        let is_valid = arr.is_valid(0, &mut ctx).expect("is_valid should succeed");
+        assert!(
+            !is_valid,
+            "null index must produce a null row, not a value read from the raw payload"
+        );
+    }
 }
