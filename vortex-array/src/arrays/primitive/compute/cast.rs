@@ -139,7 +139,7 @@ fn cast<F: NativePType + AsPrimitive<T>, T: NativePType>(array: &[F]) -> Buffer<
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use rstest::rstest;
     use vortex_buffer::BitBuffer;
     use vortex_buffer::buffer;
@@ -362,6 +362,47 @@ mod test {
             casted,
             PrimitiveArray::from_option_iter([None, Some(10u8), Some(42)])
         );
+        Ok(())
+    }
+
+    /// ABA-20: casting a fractional f64 to i64 must return an error, not silently truncate.
+    ///
+    /// Repro: 1.5_f64 cast to i64 must error; 2.0_f64 cast to i64 must succeed with value 2.
+    /// Validity-masked invalid slots (None) must not cause false positives.
+    #[test]
+    fn issue_aba20_cast_f64_to_i64_rejects_fractional_values() -> vortex_error::VortexResult<()> {
+        // Fractional value must error.
+        let fractional = buffer![1.5_f64].into_array();
+        #[expect(deprecated)]
+        assert!(
+            fractional
+                .cast(PType::I64.into())
+                .and_then(|a| a.to_canonical().map(|c| c.into_array()))
+                .is_err(),
+            "cast(1.5_f64 -> i64) must return Err — value has a fractional part"
+        );
+
+        // Exact float must succeed with the correct integer value.
+        let exact = buffer![2.0_f64].into_array();
+        #[expect(deprecated)]
+        let result = exact
+            .cast(PType::I64.into())
+            .and_then(|a| a.to_canonical().map(|c| c.into_array()))?;
+        assert_arrays_eq!(result.to_primitive(), PrimitiveArray::from_iter([2i64]));
+
+        // Invalid (null) slots must not cause false positives — the None slot's underlying
+        // bits are irrelevant and must be masked out, not checked for fractionality.
+        let with_nulls = PrimitiveArray::from_option_iter([Some(2.0_f64), None, Some(3.0)]);
+        #[expect(deprecated)]
+        let nullable_result = with_nulls
+            .into_array()
+            .cast(DType::Primitive(PType::I64, Nullability::Nullable))
+            .and_then(|a| a.to_canonical().map(|c| c.into_array()))?;
+        assert_arrays_eq!(
+            nullable_result.to_primitive(),
+            PrimitiveArray::from_option_iter([Some(2i64), None, Some(3)])
+        );
+
         Ok(())
     }
 
