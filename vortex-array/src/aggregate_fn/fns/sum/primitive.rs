@@ -232,6 +232,32 @@ mod tests {
         Ok(())
     }
 
+    /// Repro for ABA-22: `sum([1.0, NaN, 2.0, 3.0])` should propagate NaN per IEEE 754, not
+    /// silently skip NaN values and return 6.0.
+    ///
+    /// The current implementation guards with `!v.is_nan()` before accumulating each float,
+    /// which drops NaN silently.  Under IEEE 754 semantics any arithmetic involving NaN produces
+    /// NaN, so the expected result is NaN, not 6.0.
+    ///
+    /// This test is left `#[ignore]` because fixing it requires a project-level decision: NaN
+    /// propagation (IEEE 754) versus NaN-skip (Arrow/DataFusion convention).  The pre-existing
+    /// `sum_f64_with_nan` test above locks the current NaN-skip behavior and must not be changed
+    /// in this PR.
+    #[test]
+    #[ignore = "demonstrates ABA-22; see https://linear.app/abanoubdoss/issue/ABA-22"]
+    fn issue_aba22_sum_propagates_nan() -> VortexResult<()> {
+        let arr = PrimitiveArray::new(buffer![1.0f64, f64::NAN, 2.0, 3.0], Validity::NonNullable)
+            .into_array();
+        let result = sum(&arr, &mut LEGACY_SESSION.create_execution_ctx())?;
+        // IEEE 754: any sum that includes NaN must be NaN, not the partial sum of non-NaN values.
+        assert!(
+            result.as_primitive().typed_value::<f64>().unwrap().is_nan(),
+            "expected NaN but got {:?}",
+            result.as_primitive().typed_value::<f64>()
+        );
+        Ok(())
+    }
+
     #[test]
     fn sum_f32_with_nan() -> VortexResult<()> {
         let arr =
