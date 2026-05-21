@@ -228,3 +228,71 @@ impl fmt::Display for DecimalValue {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Repro for ABA-28: `DecimalValue::PartialEq` ignores scale at the raw API.
+    ///
+    /// `DecimalValue { raw: 10, scale: 1 }` (i.e. 1.0) and
+    /// `DecimalValue { raw: 10, scale: 2 }` (i.e. 0.10) are numerically
+    /// distinct, but `PartialEq` returns `true` because it only compares the
+    /// raw coefficient upcast to `i256` (dvalue.rs lines 176-189).
+    ///
+    /// The test is left `#[ignore]`'d because a raw-API design decision is
+    /// needed before fixing: the options are (a) canonicalize scales then
+    /// compare, (b) refuse to derive `PartialOrd`/`PartialEq` across different
+    /// scales, or (c) document as same-scale-only and add a panicking
+    /// `debug_assert`.  See: <https://linear.app/abanoubdoss/issue/ABA-28>
+    #[test]
+    #[ignore = "demonstrates ABA-28; see https://linear.app/abanoubdoss/issue/ABA-28"]
+    fn issue_aba28_decimal_value_partial_eq_ignores_scale_at_raw_api() {
+        // 1.0 represented at scale 1 -> raw 10
+        // 0.10 represented at scale 2 -> raw 10
+        // Numerically 1.0 != 0.10, but both have the same raw coefficient.
+        let one_point_zero = DecimalValue::I32(10); // scale=1 (caller-imposed)
+        let zero_point_one_zero = DecimalValue::I32(10); // scale=2 (caller-imposed)
+
+        // The current impl returns `true` (raw bits match); the scale-aware
+        // answer is `false`.  We assert the correct answer so this test fails
+        // on an unfixed build and passes once the bug is resolved.
+        assert_ne!(
+            one_point_zero, zero_point_one_zero,
+            "ABA-28: DecimalValue(raw=10, scale=1) == DecimalValue(raw=10, scale=2) \
+             should be false (1.0 != 0.10) but PartialEq returned true because \
+             dvalue.rs:176-189 compares only the raw i256 with no scale awareness"
+        );
+    }
+
+    /// Repro for ABA-28: `DecimalValue::PartialOrd` ignores scale at the raw API.
+    ///
+    /// `DecimalValue { raw: 10, scale: 1 }` (i.e. 1.0) compared with
+    /// `DecimalValue { raw: 50, scale: 2 }` (i.e. 0.5) should yield `Greater`
+    /// (1.0 > 0.5), but `PartialOrd` returns `Less` because it compares the
+    /// raw coefficients 10 vs 50 with no scale normalization
+    /// (dvalue.rs lines 193-206).
+    ///
+    /// The test is left `#[ignore]`'d because a raw-API design decision is
+    /// needed before fixing.  See: <https://linear.app/abanoubdoss/issue/ABA-28>
+    #[test]
+    #[ignore = "demonstrates ABA-28; see https://linear.app/abanoubdoss/issue/ABA-28"]
+    fn issue_aba28_decimal_value_partial_ord_ignores_scale_at_raw_api() {
+        // 1.0 represented at scale 1 -> raw 10
+        // 0.5 represented at scale 2 -> raw 50
+        // Numerically 1.0 > 0.5, but raw 10 < 50.
+        let one_point_zero = DecimalValue::I32(10); // scale=1 (caller-imposed)
+        let zero_point_five = DecimalValue::I32(50); // scale=2 (caller-imposed)
+
+        // The current impl returns `Some(Ordering::Less)` (raw 10 < 50); the
+        // scale-aware answer is `Some(Ordering::Greater)` (1.0 > 0.5).
+        assert_eq!(
+            one_point_zero.partial_cmp(&zero_point_five),
+            Some(Ordering::Greater),
+            "ABA-28: DecimalValue(raw=10, scale=1).partial_cmp(DecimalValue(raw=50, scale=2)) \
+             should be Greater (1.0 > 0.5) but PartialOrd returned Less because \
+             dvalue.rs:193-206 upcasts both raws to i256 and compares (10 < 50) \
+             with no scale normalization"
+        );
+    }
+}
