@@ -108,14 +108,16 @@ fn test_decimal_cast_overflow() {
 
 #[test]
 fn test_decimal_cast_between_decimal_types() {
-    // Decimal with different precision/scale
+    // 123.45 stored as raw 12345 at scale 2.
     let decimal_scalar = Scalar::decimal(
         DecimalValue::I32(12345),
         DecimalDType::new(10, 2),
         Nullability::NonNullable,
     );
 
-    // Cast to different decimal type (currently just preserves value)
+    // Cast to Decimal(20, 4): scale grows from 2 to 4 so the raw integer is
+    // multiplied by 10^(4-2) = 100 to preserve the numeric value 123.45.
+    // Precision 20 requires i128 storage (smallest variant for 19..=38).
     let result = decimal_scalar
         .cast(&DType::Decimal(
             DecimalDType::new(20, 4),
@@ -123,9 +125,8 @@ fn test_decimal_cast_between_decimal_types() {
         ))
         .unwrap();
 
-    // Value should be preserved (TODO(connor): proper scaling logic - whatever that means???)
     let decimal_value: Option<DecimalValue> = result.try_into().unwrap();
-    assert_eq!(decimal_value, Some(DecimalValue::I32(12345)));
+    assert_eq!(decimal_value, Some(DecimalValue::I128(1_234_500)));
 }
 
 #[test]
@@ -301,15 +302,16 @@ fn test_decimal_to_decimal_same_type() {
 
 #[test]
 fn test_decimal_to_decimal_different_scale() {
-    // Create a decimal with scale=2
+    // 100.00 stored as raw 10000 at scale 2.
     let decimal = Scalar::decimal(
-        DecimalValue::I32(10000), // Represents 100.00
+        DecimalValue::I32(10000),
         DecimalDType::new(10, 2),
         Nullability::NonNullable,
     );
 
-    // Cast to decimal with scale=4
-    // TODO: This should properly rescale, but for now it preserves the raw value
+    // Cast to scale 4: numeric value 100.00 must be preserved by multiplying
+    // the raw integer by 10^(4-2) = 100, giving raw 1_000_000.
+    // Precision 10 requires i64 storage (smallest variant for 10..=18).
     let target_dtype = DType::Decimal(DecimalDType::new(10, 4), Nullability::NonNullable);
     let result = decimal.cast(&target_dtype);
     assert!(result.is_ok());
@@ -317,7 +319,7 @@ fn test_decimal_to_decimal_different_scale() {
     let casted = result.unwrap();
     assert_eq!(
         casted.as_decimal().decimal_value(),
-        Some(DecimalValue::I32(10000))
+        Some(DecimalValue::I64(1_000_000))
     );
 }
 
@@ -1186,4 +1188,87 @@ fn test_fits_in_precision_mixed_decimal_value_types() {
     assert!(!DecimalValue::I64(100000).fits_in_precision(dtype));
     assert!(DecimalValue::I128(99999).fits_in_precision(dtype));
     assert!(!DecimalValue::I256(i256::from_i128(100000)).fits_in_precision(dtype));
+}
+
+/// Regression test for ABA-25: a Decimal-to-Decimal scalar cast that changes the
+/// scale must rescale the underlying raw integer so the numeric value is preserved.
+///
+/// Source: 1.23 represented as raw integer 123 with scale=2.
+/// Target: same precision, scale changed from 2 -> 4. To preserve the numeric value
+/// the raw integer must be rescaled from 123 to 12300 (multiply by 10^(4-2) = 100).
+///
+/// Before the fix, the cast reused the raw `DecimalValue` unchanged under the new
+/// scale, silently turning 1.23 into 0.0123 (three orders of magnitude off).
+#[test]
+fn issue_aba25_decimal_cast_rescales_raw_value() {
+    let src_dtype = DecimalDType::new(10, 2);
+    let src_raw: i32 = 123;
+    let scalar = Scalar::decimal(
+        DecimalValue::I32(src_raw),
+        src_dtype,
+        Nullability::NonNullable,
+    );
+
+    let tgt_dtype_inner = DecimalDType::new(10, 4);
+    let target_dtype = DType::Decimal(tgt_dtype_inner, Nullability::NonNullable);
+
+    let casted = scalar
+        .cast(&target_dtype)
+        .expect("decimal-to-decimal cast must not error on a value that fits");
+    let view = casted.as_decimal();
+
+    let got_raw: i128 = match view.decimal_value() {
+        Some(DecimalValue::I8(v)) => v as i128,
+        Some(DecimalValue::I16(v)) => v as i128,
+        Some(DecimalValue::I32(v)) => v as i128,
+        Some(DecimalValue::I64(v)) => v as i128,
+        Some(DecimalValue::I128(v)) => v,
+        Some(DecimalValue::I256(_)) => panic!("unexpected I256 result for in-range cast"),
+        None => panic!("unexpected null result from non-null cast"),
+    };
+
+    // Expected: numeric value preserved -> raw scaled by 10^(tgt - src) = 100.
+    assert_eq!(
+        got_raw, 12300,
+        "raw value must be rescaled to preserve numeric value 1.23"
+    );
+
+    // And the result dtype must be the target dtype.
+    assert!(matches!(view.dtype(), DType::Decimal(d, _) if *d == tgt_dtype_inner));
+}
+
+/// Regression test for ABA-25: rescaling on Decimal-to-Decimal cast must also handle
+/// scale shrinks (negative delta) by integer-dividing the raw value by 10^|delta|.
+#[test]
+fn issue_aba25_decimal_cast_rescales_raw_value_scale_shrink() {
+    let src_dtype = DecimalDType::new(10, 4);
+    let scalar = Scalar::decimal(
+        DecimalValue::I32(12300),
+        src_dtype,
+        Nullability::NonNullable,
+    );
+
+    let tgt_dtype_inner = DecimalDType::new(10, 2);
+    let target_dtype = DType::Decimal(tgt_dtype_inner, Nullability::NonNullable);
+
+    let casted = scalar
+        .cast(&target_dtype)
+        .expect("decimal-to-decimal cast must not error on a value that fits");
+    let view = casted.as_decimal();
+
+    let got_raw: i128 = match view.decimal_value() {
+        Some(DecimalValue::I8(v)) => v as i128,
+        Some(DecimalValue::I16(v)) => v as i128,
+        Some(DecimalValue::I32(v)) => v as i128,
+        Some(DecimalValue::I64(v)) => v as i128,
+        Some(DecimalValue::I128(v)) => v,
+        Some(DecimalValue::I256(_)) => panic!("unexpected I256 result for in-range cast"),
+        None => panic!("unexpected null result from non-null cast"),
+    };
+
+    // 1.2300 -> 1.23: raw 12300 / 100 = 123.
+    assert_eq!(
+        got_raw, 123,
+        "raw value must be rescaled (truncating) to preserve numeric value"
+    );
 }
