@@ -19,6 +19,7 @@ use crate::dtype::DType;
 use crate::dtype::NativePType;
 use crate::dtype::Nullability;
 use crate::dtype::PType;
+use crate::match_each_float_ptype;
 use crate::match_each_native_ptype;
 use crate::scalar_fn::fns::cast::CastKernel;
 use crate::scalar_fn::fns::cast::CastReduce;
@@ -90,6 +91,12 @@ impl CastKernel for Primitive {
             );
         }
 
+        // Reject float-to-integer casts that would silently truncate fractional parts.
+        // Invalid (null) slots are excluded from the check; their underlying bits are irrelevant.
+        if array.ptype().is_float() && new_ptype.is_int() {
+            reject_fractional_values(array, ctx)?;
+        }
+
         // Same-width integers have identical bit representations due to 2's
         // complement. If all values fit in the target range, reinterpret with
         // no allocation.
@@ -129,6 +136,47 @@ fn values_fit_in(
         .ok()
         .flatten()
         .is_none_or(|mm| mm.min.cast(&target_dtype).is_ok() && mm.max.cast(&target_dtype).is_ok())
+}
+
+/// Returns an error if any valid element in `array` (a float source ptype) has a non-zero
+/// fractional part. Invalid (null) positions are skipped.
+///
+/// NaN and ±Inf are caught here too: `fract()` on those values returns NaN, and
+/// `NaN != 0.0` evaluates to `true`, so they are also rejected — in practice they are
+/// already rejected by `values_fit_in` unless masked as invalid.
+fn reject_fractional_values(
+    array: ArrayView<'_, Primitive>,
+    ctx: &mut ExecutionCtx,
+) -> VortexResult<()> {
+    let validity = array.validity()?.execute_mask(array.len(), ctx)?;
+    match_each_float_ptype!(array.ptype(), |F| {
+        reject_fractional_slice::<F>(array.as_slice::<F>(), &validity, array.ptype())?;
+    });
+    Ok(())
+}
+
+/// Per-slice fractional check, generic over any `NativePType` that can be converted to `f64`.
+fn reject_fractional_slice<F>(
+    slice: &[F],
+    validity: &vortex_mask::Mask,
+    src_ptype: PType,
+) -> VortexResult<()>
+where
+    F: NativePType + Copy + std::fmt::Display + Into<f64>,
+{
+    for (i, &src) in slice.iter().enumerate() {
+        if !validity.value(i) {
+            continue;
+        }
+        let as_f64: f64 = src.into();
+        if as_f64.fract() != 0.0 {
+            vortex_bail!(
+                Compute: "Cannot cast fractional value {} to integer — value has a fractional part",
+                src_ptype,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Caller must ensure all valid values are representable via `values_fit_in`.
