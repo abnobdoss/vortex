@@ -1005,4 +1005,48 @@ mod tests {
         assert_eq!(df_as_arrow, vec![0, 0, 50, 100, 100]);
         assert_eq!(vortex_as_arrow, df_as_arrow);
     }
+
+    /// [ABA-32] The DataFusion→Vortex expression conversion silently drops the SQL
+    /// LIKE ESCAPE character.
+    ///
+    /// DataFusion's physical [`LikeExpr`] does not carry `escape_char` (the logical
+    /// layer drops it before producing the physical plan), and Vortex's `LikeOptions`
+    /// has no `escape_char` field either.  Even for the default `\` escape, there is
+    /// no API surface to express or round-trip escape semantics.
+    ///
+    /// The fix requires:
+    ///  1. Adding `escape_char: Option<char>` to `LikeOptions` (vortex-array).
+    ///  2. Threading it through the proto serialization (vortex-proto).
+    ///  3. Plumbing it through this conversion once DataFusion exposes the field on
+    ///     the physical `LikeExpr`.
+    ///
+    /// This test fails on develop because the converted `LikeOptions` debug output
+    /// does NOT contain "escape_char", proving the schema gap is present.
+    #[ignore = "demonstrates ABA-32; see https://linear.app/abanoubdoss/issue/ABA-32"]
+    #[test]
+    fn issue_aba32_datafusion_conversion_preserves_like_escape_char() {
+        let expr = Arc::new(df_expr::Column::new("text_col", 0)) as Arc<dyn PhysicalExpr>;
+        let pattern = Arc::new(df_expr::Literal::new(ScalarValue::Utf8(Some(
+            "test%".to_string(),
+        )))) as Arc<dyn PhysicalExpr>;
+        // DataFusion's physical LikeExpr has no escape_char parameter; we construct
+        // the simplest case (negated=false, case_insensitive=false) and verify
+        // whether the Vortex conversion at least exposes an escape_char field on
+        // the resulting LikeOptions.
+        let like_expr = df_expr::LikeExpr::new(false, false, expr, pattern);
+
+        let result = DefaultExpressionConvertor::default()
+            .convert(&like_expr)
+            .unwrap();
+        let opts = result.as_::<Like>();
+        let debug_repr = format!("{opts:?}");
+
+        // After the fix `LikeOptions` will contain an `escape_char` field and this
+        // string will appear in the debug output.  On develop the field is absent.
+        assert!(
+            debug_repr.contains("escape_char"),
+            "LikeOptions converted from DataFusion is missing `escape_char` (ABA-32): \
+             got {debug_repr:?}"
+        );
+    }
 }
