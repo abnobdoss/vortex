@@ -650,4 +650,55 @@ mod test {
         assert_arrays_eq!(chunk_offsets, PrimitiveArray::from_iter([0u64]));
         Ok(())
     }
+
+    /// Repro for ABA-14: a `BitPackedArray` produced from an all-zero input
+    /// calls `bitpack_primitive` with `bit_width == 0`, which short-circuits to
+    /// `Buffer::<T>::empty()` (bitpack_compress.rs:147-149). The VTable exposes
+    /// that buffer as the sole physical buffer, so `Array::nbytes()` — which
+    /// sums buffer lengths — reports 0 despite the array representing 1024
+    /// logical elements.
+    ///
+    /// Downstream: `vortex-compressor/src/estimate.rs` maps `after_nbytes == 0`
+    /// from sample compression to `EstimateScore::ZeroBytes`, which
+    /// `EstimateScore::is_valid` treats as ineligible for scheme selection
+    /// (line 142-149). The scheme that achieves *perfect* compression of all-zero
+    /// data is therefore silently excluded from the compressor's decision.
+    ///
+    /// Open question for upstream: should `nbytes()` for a zero-bit-width scheme
+    /// report virtual uncompressed size or actual byte size? See
+    /// https://linear.app/abanoubdoss/issue/ABA-14
+    #[test]
+    #[ignore = "demonstrates ABA-14; see https://linear.app/abanoubdoss/issue/ABA-14"]
+    fn issue_aba14_bitpack_zerobytes_reports_nonzero_nbytes() -> VortexResult<()> {
+        let mut ctx = SESSION.create_execution_ctx();
+
+        // 1024 zeros: exactly one FastLanes chunk, unambiguously non-empty input.
+        // `bitpack_to_best_bit_width` will select bit_width=0 (zero packed bits
+        // is cheapest for all-zero data), triggering the bug.
+        let arr = PrimitiveArray::new(
+            Buffer::<u32>::copy_from(&vec![0u32; 1024]),
+            Validity::NonNullable,
+        );
+        assert_eq!(arr.len(), 1024, "harness: input length must be 1024");
+
+        let bp = bitpack_to_best_bit_width(&arr, &mut ctx)?;
+        let bit_width = bp.bit_width();
+        let encoded = bp.into_array();
+        let nbytes = encoded.nbytes();
+
+        // A BitPackedArray representing 1024 logical values cannot honestly
+        // report zero bytes — even at bit_width==0 there is metadata overhead.
+        assert!(
+            nbytes > 0,
+            "ABA-14 reproduced: BitPacked<u32>(1024 zeros) reports nbytes={nbytes} \
+             with bit_width={bit_width}. Bug site: \
+             encodings/fastlanes/src/bitpacking/array/bitpack_compress.rs:147-149 \
+             (Buffer::empty() short-circuit for bit_width==0). Downstream: \
+             vortex-compressor/src/estimate.rs maps this to EstimateScore::ZeroBytes \
+             which is ineligible for scheme selection — perfect compression is \
+             silently rejected."
+        );
+
+        Ok(())
+    }
 }
