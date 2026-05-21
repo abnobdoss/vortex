@@ -361,21 +361,18 @@ impl RunEndData {
             return Ok(());
         }
 
-        #[cfg(debug_assertions)]
-        {
-            // Run ends must be strictly sorted for binary search to work correctly.
-            let pre_validation = ends.statistics().to_owned();
+        // Run ends must be strictly sorted for binary search to work correctly.
+        // The check must run in release builds too — see ABA-29.
+        let pre_validation = ends.statistics().to_owned();
 
-            let is_sorted = ends
-                .statistics()
-                .compute_is_strict_sorted(ctx)
-                .unwrap_or(false);
+        let is_sorted = ends
+            .statistics()
+            .compute_is_strict_sorted(ctx)
+            .unwrap_or(false);
 
-            // Preserve the original statistics since compute_is_strict_sorted may have mutated them.
-            // We don't want to run with different stats in debug mode and outside.
-            ends.statistics().inherit(pre_validation.iter());
-            debug_assert!(is_sorted);
-        }
+        // Preserve the original statistics since compute_is_strict_sorted may have mutated them.
+        ends.statistics().inherit(pre_validation.iter());
+        vortex_ensure!(is_sorted, "run ends must be strictly sorted");
 
         // Skip host-only validation when ends are not host-resident.
         if !ends.is_host() {
