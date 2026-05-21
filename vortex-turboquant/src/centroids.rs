@@ -343,4 +343,37 @@ mod tests {
         assert!(compute_or_get_centroids(1, 2).is_err());
         assert!(compute_or_get_centroids(127, 2).is_err());
     }
+
+    /// Regression test for ABA-15 / vortex#7245.
+    ///
+    /// At padded_dim=2048, bit_width=2, the marginal pdf `(1 - x²)^((d-3)/2)` is
+    /// so sharply peaked near zero that a uniform [-1, 1] centroid initialisation
+    /// leaves the outer Voronoi cells with an all-zeros numerical integral.  The
+    /// `denominator < 1e-30` guard then returns the cell midpoint (±0.75), those
+    /// centroids never move, and the quantizer collapses to 1-bit fidelity.
+    ///
+    /// After the 6-σ fix all four 2-bit centroids must lie within the effective
+    /// support of the distribution: |centroid| < 0.5 (the true support shrinks to
+    /// ≈ 6/√2048 ≈ 0.133 at this dimension).
+    #[test]
+    fn issue_aba15_centroids_dont_collapse_at_padded_dim_2048_bit_width_2() -> VortexResult<()> {
+        let dim = 2048u32;
+        let bit_width = 2u8;
+        let centroids = compute_or_get_centroids(dim, bit_width)?;
+        assert_eq!(centroids.len(), 4, "expected 4 centroids for bit_width=2");
+
+        let max_abs = centroids
+            .iter()
+            .map(|c| c.abs())
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            max_abs < 0.5,
+            "ABA-15: 2-bit centroids collapsed at padded_dim={dim}: max|c|={max_abs:.4} >= 0.5. \
+             Outer centroids are stuck at initial uniform positions — uniform [-1,1] init collapses \
+             to 1-bit fidelity when pdf underflows outside the ≈6/√d support. \
+             centroids={centroids:?}",
+        );
+        Ok(())
+    }
 }
