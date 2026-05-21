@@ -156,4 +156,56 @@ mod tests {
     fn test_take_constant_conformance(#[case] array: ConstantArray) {
         test_take_conformance(&array.into_array());
     }
+
+    /// Regression test for ABA-17.
+    ///
+    /// `Constant::take` previously branched only on the indices' validity mask
+    /// and never inspected the raw index values. A VALID index that fell past
+    /// the constant array's length silently produced a row carrying the
+    /// constant fill value, rather than an out-of-bounds error — diverging
+    /// from every other take kernel (e.g. `Primitive::take`, which rejects
+    /// such indices).
+    #[test]
+    #[ignore = "ABA-17 — fixed in a follow-up commit; un-ignore once the fix lands"]
+    fn issue_aba17_take_must_reject_oob_indices() -> vortex_error::VortexResult<()> {
+        let array = ConstantArray::new(42i32, 10).into_array();
+
+        // Single VALID index whose value is far past `array.len() = 10`.
+        let indices = PrimitiveArray::new(buffer![u32::MAX], Validity::NonNullable).into_array();
+
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+        // Either the lazy `take` or the eager `execute::<Canonical>` must
+        // error. We accept either: the contract is that no row is produced
+        // for an out-of-bounds index.
+        let outcome = array
+            .take(indices)
+            .and_then(|taken| taken.execute::<crate::Canonical>(&mut ctx));
+        assert!(
+            outcome.is_err(),
+            "ConstantArray::take must reject out-of-bounds indices, but it succeeded"
+        );
+
+        // Mixed in-range + OOB indices, all valid: the OOB tail must still
+        // be rejected, even though some indices are in range.
+        let indices =
+            PrimitiveArray::new(buffer![0u32, 5, 1010], Validity::NonNullable).into_array();
+        let outcome = array
+            .take(indices)
+            .and_then(|taken| taken.execute::<crate::Canonical>(&mut ctx));
+        assert!(
+            outcome.is_err(),
+            "ConstantArray::take must reject a mix of in-range and OOB indices"
+        );
+
+        // Null index whose underlying value is OOB must be accepted: the
+        // bounds check applies only to VALID positions. This guards against
+        // a regression where a naive fix would inspect every raw value.
+        let indices =
+            PrimitiveArray::new(buffer![0u32, u32::MAX], Validity::from_iter([true, false]))
+                .into_array();
+        let taken = array.take(indices)?;
+        assert_eq!(taken.len(), 2);
+
+        Ok(())
+    }
 }
