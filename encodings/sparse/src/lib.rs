@@ -353,8 +353,9 @@ impl Sparse {
     pub fn try_new_from_patches(patches: Patches, fill_value: Scalar) -> VortexResult<SparseArray> {
         let dtype = fill_value.dtype().clone();
         let len = patches.array_len();
+        let patches = SparseData::normalize_patches_dtype(patches, &fill_value)?;
         let slots = SparseData::make_slots(&patches);
-        let data = SparseData::from_patches(&patches, fill_value)?;
+        let data = SparseData::from_patches_unchecked(&patches, fill_value);
         Ok(unsafe {
             Array::from_parts_unchecked(ArrayParts::new(Sparse, dtype, len, data).with_slots(slots))
         })
