@@ -136,3 +136,44 @@ impl FileStatsAccumulator {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use vortex_array::dtype::DType;
+    use vortex_array::dtype::Nullability;
+    use vortex_session::VortexSession;
+
+    use super::FileStatsAccumulator;
+
+    /// Demonstrates that `FileStatsAccumulator::new` panics when the top-level
+    /// dtype is a nullable struct.
+    ///
+    /// This test is ignored because it documents an unresolved bug (ABA-18): the
+    /// `FileWriter` public API accepts nullable top-level struct dtypes, but the
+    /// stats accumulation path panics immediately instead of returning a typed
+    /// error or implementing the missing support.
+    ///
+    /// Un-ignore once upstream resolves the FileStatsAccumulator semantics
+    /// decision for nullable top-level structs.
+    ///
+    /// See: https://linear.app/abanoubdoss/issue/ABA-18
+    #[test]
+    #[ignore = "demonstrates ABA-18; see https://linear.app/abanoubdoss/issue/ABA-18"]
+    #[should_panic(expected = "temporarily does not support nullable top-level structs")]
+    fn issue_aba18_filewriter_panics_on_nullable_top_level_struct() {
+        let dtype = DType::struct_(
+            [("a", DType::Bool(Nullability::Nullable))],
+            Nullability::Nullable,
+        );
+        let session = VortexSession::empty();
+        // Panics inside FileStatsAccumulator::new when nullability == Nullable.
+        drop(FileStatsAccumulator::new(
+            &dtype,
+            Arc::from(Vec::<_>::new()),
+            1024,
+            &session,
+        ));
+    }
+}
