@@ -538,6 +538,65 @@ mod tests {
         assert!(scalar_cmp(&ms_scalar, &s_scalar, CompareOperator::NotEq).is_err());
     }
 
+    /// Repro for ABA-21: float compare uses Arrow's totalOrder semantics, not IEEE 754 / SQL.
+    ///
+    /// Arrow's vectorized kernels (`arrow_ord::cmp::{eq, lt, gt, …}`) implement IEEE 754
+    /// **totalOrder** for floats (NaN == NaN is true, -0.0 < +0.0).  SQL and IEEE 754
+    /// default comparisons treat NaN as unordered (NaN == NaN is false, NaN cmp x is false
+    /// for all x) and the two zeros as equal (+0.0 == -0.0 is true).
+    ///
+    /// The probes below assert the SQL / IEEE 754 answer.  They fail on the current
+    /// `develop` branch because `execute_compare` delegates to `arrow_compare_arrays`
+    /// which calls `arrow_ord::cmp::*` directly (compare.rs lines 174-181).
+    ///
+    /// Marked `#[ignore]` because the choice of semantics (totalOrder for
+    /// dict/sort/pruning vs. IEEE 754 for SQL filters) is a deliberate upstream
+    /// trade-off that needs a design decision before a fix can be written.
+    /// See: https://linear.app/abanoubdoss/issue/ABA-21
+    #[test]
+    #[ignore = "demonstrates ABA-21; see https://linear.app/abanoubdoss/issue/ABA-21"]
+    fn issue_aba21_float_compare_uses_ieee754_semantics() {
+        // --- Probe 1: NaN == NaN must be false (IEEE 754 / SQL) ---
+        // totalOrder treats NaN as a specific value with the highest rank, so same-bit
+        // NaNs compare equal under totalOrder (NaN == NaN → true). IEEE 754 default
+        // comparison and SQL both require NaN == NaN → false.
+        let lhs = PrimitiveArray::from_iter([f64::NAN]).into_array();
+        let rhs = PrimitiveArray::from_iter([f64::NAN]).into_array();
+        let result = lhs.binary(rhs, Operator::Eq).unwrap();
+        // SQL/IEEE 754: NaN == NaN → false. totalOrder (current): returns true.
+        assert_arrays_eq!(result, BoolArray::from_iter([false]));
+
+        // --- Probe 2: +0.0 == -0.0 must be true (IEEE 754 / SQL) ---
+        // totalOrder distinguishes -0.0 and +0.0 by their sign bit, so -0.0 == +0.0 is
+        // false under totalOrder. IEEE 754 default comparison and SQL both require them to
+        // compare equal (+0.0 == -0.0 → true).
+        let lhs = PrimitiveArray::from_iter([0.0f64]).into_array();
+        let rhs = PrimitiveArray::from_iter([-0.0f64]).into_array();
+        let result = lhs.binary(rhs, Operator::Eq).unwrap();
+        // SQL/IEEE 754: +0.0 == -0.0 → true. totalOrder (current): returns false.
+        assert_arrays_eq!(result, BoolArray::from_iter([true]));
+
+        // --- Probe 3a: NaN < 1.0 must be false (IEEE 754 / SQL) ---
+        // Under totalOrder, NaN ranks above all finite floats, so NaN < 1.0 is false —
+        // the same as IEEE 754. This probe pins the Lt unordered contract.
+        let lhs = PrimitiveArray::from_iter([f64::NAN]).into_array();
+        let rhs = PrimitiveArray::from_iter([1.0f64]).into_array();
+        let result = lhs.binary(rhs, Operator::Lt).unwrap();
+        // Both SQL/IEEE 754 and totalOrder agree: NaN < 1.0 → false.
+        assert_arrays_eq!(result, BoolArray::from_iter([false]));
+
+        // --- Probe 3b: NaN > 1.0 must be false (IEEE 754 / SQL) ---
+        // This IS the discriminating NaN probe: under totalOrder, NaN ranks above all
+        // finite floats so NaN > 1.0 returns true. Under IEEE 754 / SQL, NaN is
+        // unordered against every number so all comparisons return false.
+        // SQL impact: `WHERE col > 0.0` silently includes NaN rows on the current branch.
+        let lhs = PrimitiveArray::from_iter([f64::NAN]).into_array();
+        let rhs = PrimitiveArray::from_iter([1.0f64]).into_array();
+        let result = lhs.binary(rhs, Operator::Gt).unwrap();
+        // SQL/IEEE 754: NaN > 1.0 → false. totalOrder (current): returns true.
+        assert_arrays_eq!(result, BoolArray::from_iter([false]));
+    }
+
     #[test]
     fn test_empty_list() {
         let list = ListViewArray::new(
