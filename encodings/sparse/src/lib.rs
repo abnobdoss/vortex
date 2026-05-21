@@ -920,4 +920,42 @@ mod test {
 
         assert_eq!(actual, expected);
     }
+
+    /// Regression test for ABA-30: `Sparse::try_new_from_patches` previously
+    /// captured the slot `ArrayRef` from the caller's un-normalized `Patches`
+    /// before `normalize_patches_dtype` cast the values to match `fill_value`.
+    /// When the caller's `patches.values().dtype()` differed from
+    /// `fill_value.dtype()` in nullability, the resulting `SparseArray`'s
+    /// `PATCH_VALUES` slot disagreed with its declared dtype.
+    #[test]
+    fn issue_aba30_sparse_slot_dtype_matches_declared_dtype() -> VortexResult<()> {
+        // Non-nullable i32 patch values paired with a nullable i32 fill value.
+        let indices = buffer![0u64, 5, 10].into_array();
+        let values = buffer![100i32, 200, 300].into_array();
+        let patches = Patches::new(20, 0, indices, values, None)?;
+
+        assert_eq!(
+            patches.values().dtype(),
+            &DType::Primitive(PType::I32, Nullability::NonNullable),
+        );
+
+        let fill_value = Scalar::null(DType::Primitive(PType::I32, Nullability::Nullable));
+        let arr = Sparse::try_new_from_patches(patches, fill_value)?;
+
+        let array_dtype = arr.as_ref().dtype().clone();
+        let slot_dtype = arr.as_ref().slots()[SparseSlots::PATCH_VALUES]
+            .as_ref()
+            .vortex_expect("PATCH_VALUES slot must be present")
+            .dtype()
+            .clone();
+        let patches_dtype = arr.patches().values().dtype().clone();
+
+        assert_eq!(
+            array_dtype,
+            DType::Primitive(PType::I32, Nullability::Nullable),
+        );
+        assert_eq!(slot_dtype, array_dtype);
+        assert_eq!(patches_dtype, array_dtype);
+        Ok(())
+    }
 }
