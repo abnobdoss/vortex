@@ -263,9 +263,35 @@ impl PValue {
     /// Converts this value to a specific native primitive type.
     ///
     /// # Errors
-    /// Returns `VortexError` if the conversion is not supported or would overflow.
+    /// Returns `VortexError` if the conversion is not supported, would overflow, or would
+    /// silently discard a fractional part (float-to-integer cast with a non-zero fraction).
     #[inline]
     pub fn cast<T: NativePType>(&self) -> VortexResult<T> {
+        // Reject float-to-integer casts that would silently truncate a fractional part.
+        // NaN and ±Inf are also rejected because their fract() is NaN (≠ 0.0).
+        if T::PTYPE.is_int() {
+            match *self {
+                PValue::F16(f) => {
+                    // f16 has no fract(); promote to f32 via ToPrimitive then check.
+                    let as_f32 = ToPrimitive::to_f32(&f).unwrap_or(f32::NAN);
+                    if as_f32.fract() != 0.0f32 {
+                        vortex_bail!("Cannot cast fractional value {f} to {}", T::PTYPE);
+                    }
+                }
+                PValue::F32(f) => {
+                    if f.fract() != 0.0f32 {
+                        vortex_bail!("Cannot cast fractional value {f} to {}", T::PTYPE);
+                    }
+                }
+                PValue::F64(f) => {
+                    if f.fract() != 0.0f64 {
+                        vortex_bail!("Cannot cast fractional value {f} to {}", T::PTYPE);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         let res = match *self {
             PValue::U8(u) => T::from_u8(u),
             PValue::U16(u) => T::from_u16(u),
