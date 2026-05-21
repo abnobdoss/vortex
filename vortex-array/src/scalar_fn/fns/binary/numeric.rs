@@ -72,6 +72,136 @@ fn constant_numeric(
     Ok(Some(ConstantArray::new(result, lhs.len()).into_array()))
 }
 
+/// Repro tests for ABA-23: integer arithmetic panics on overflow / divide-by-zero.
+///
+/// The bug: `to_primitive()` calls `to_canonical().vortex_expect("to_canonical failed")`,
+/// which panics on any `Err` (canonical.rs:489-492). Arrow arithmetic kernels return `Err`
+/// on integer overflow and divide-by-zero, but because evaluation is lazy the error only
+/// surfaces inside `to_canonical`, where `vortex_expect` converts it to an unrecoverable
+/// panic. Callers cannot catch this with normal `VortexResult` handling.
+///
+/// Each test is marked `#[should_panic]` (current wrong behaviour = panics) AND
+/// `#[ignore]` (so CI stays green until a fix lands).
+/// When the fix ships, flip `#[should_panic]` to an assertion that `to_canonical` returns
+/// `Err`, and remove `#[ignore]`.
+///
+/// See: <https://linear.app/abanoubdoss/issue/ABA-23>
+#[cfg(test)]
+#[allow(deprecated)] // intentionally exercising the deprecated to_primitive() panic site
+mod tests {
+    use std::panic;
+    use std::panic::AssertUnwindSafe;
+
+    use vortex_buffer::buffer;
+
+    use crate::IntoArray;
+    use crate::ToCanonical;
+    use crate::builtins::ArrayBuiltins;
+    use crate::scalar_fn::fns::operators::Operator;
+
+    /// Materializes a lazy binary array via `to_canonical()` (the `VortexResult` path),
+    /// NOT via `to_primitive()` (which panics). Returns `Ok(())` on success or graceful
+    /// `Err`; returns `Err(String)` if `to_canonical` itself returns `Err`.
+    ///
+    /// This helper is intentionally separate from `to_primitive()` so the tests can
+    /// document *where* the panic is rather than triggering it through the happy path.
+    fn eval_to_canonical_result(
+        lhs: crate::ArrayRef,
+        rhs: crate::ArrayRef,
+        op: Operator,
+    ) -> Result<(), String> {
+        let arr = lhs
+            .binary(rhs, op)
+            .map_err(|e| format!("binary() Err: {e}"))?;
+        arr.to_canonical()
+            .map(|_| ())
+            .map_err(|e| format!("to_canonical Err: {e}"))
+    }
+
+    #[test]
+    #[ignore = "demonstrates ABA-23; see https://linear.app/abanoubdoss/issue/ABA-23"]
+    #[should_panic(expected = "to_canonical failed")]
+    fn issue_aba23_i32_add_max_plus_one_must_not_panic() {
+        // i32::MAX + 1 overflows. Arrow returns Err; `to_primitive()` panics via
+        // `vortex_expect`. This test locks the wrong behaviour: flip when fixed.
+        let lhs = buffer![i32::MAX].into_array();
+        let rhs = buffer![1i32].into_array();
+        let arr = lhs
+            .binary(rhs, Operator::Add)
+            .expect("binary() should not fail");
+        // to_primitive() is the panic site (canonical.rs:489-492).
+        drop(arr.to_primitive());
+    }
+
+    #[test]
+    #[ignore = "demonstrates ABA-23; see https://linear.app/abanoubdoss/issue/ABA-23"]
+    #[should_panic(expected = "to_canonical failed")]
+    fn issue_aba23_i64_div_by_zero_must_not_panic() {
+        // Integer divide-by-zero: Arrow returns Err; `to_primitive()` panics.
+        let lhs = buffer![10i64].into_array();
+        let rhs = buffer![0i64].into_array();
+        let arr = lhs
+            .binary(rhs, Operator::Div)
+            .expect("binary() should not fail");
+        drop(arr.to_primitive());
+    }
+
+    #[test]
+    #[ignore = "demonstrates ABA-23; see https://linear.app/abanoubdoss/issue/ABA-23"]
+    #[should_panic(expected = "to_canonical failed")]
+    fn issue_aba23_u32_sub_underflow_must_not_panic() {
+        // 0u32 - 1 underflows (unsigned). Arrow returns Err; `to_primitive()` panics.
+        let lhs = buffer![0u32].into_array();
+        let rhs = buffer![1u32].into_array();
+        let arr = lhs
+            .binary(rhs, Operator::Sub)
+            .expect("binary() should not fail");
+        drop(arr.to_primitive());
+    }
+
+    #[test]
+    #[ignore = "demonstrates ABA-23; see https://linear.app/abanoubdoss/issue/ABA-23"]
+    #[should_panic(expected = "to_canonical failed")]
+    fn issue_aba23_i32_mul_overflow_must_not_panic() {
+        // i32::MAX * 2 overflows. Arrow returns Err; `to_primitive()` panics.
+        let lhs = buffer![i32::MAX].into_array();
+        let rhs = buffer![2i32].into_array();
+        let arr = lhs
+            .binary(rhs, Operator::Mul)
+            .expect("binary() should not fail");
+        drop(arr.to_primitive());
+    }
+
+    /// Verify the `to_canonical()` path (the `VortexResult` path) does surface the error
+    /// rather than panicking. This test documents the *desired* graceful behaviour and
+    /// should stay green both before and after the fix.
+    #[test]
+    fn issue_aba23_to_canonical_returns_err_not_panic_on_overflow() {
+        // Use catch_unwind to distinguish graceful Err from panic.
+        let prev_hook = panic::take_hook();
+        panic::set_hook(Box::new(|_| {}));
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            eval_to_canonical_result(
+                buffer![i32::MAX].into_array(),
+                buffer![1i32].into_array(),
+                Operator::Add,
+            )
+        }));
+        panic::set_hook(prev_hook);
+
+        match result {
+            Ok(Err(_graceful_error)) => { /* correct: graceful VortexResult::Err */ }
+            Ok(Ok(())) => {
+                panic!("ABA-23: i32::MAX + 1 returned Ok — silent integer wrap is also wrong.")
+            }
+            Err(_panic) => panic!(
+                "ABA-23: i32::MAX + 1 panicked via to_canonical() — the VortexResult path \
+                 should not panic; only to_primitive() (which calls vortex_expect) should."
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use vortex_buffer::buffer;
