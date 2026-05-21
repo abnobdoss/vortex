@@ -189,16 +189,8 @@ mod tests {
                     PrimitiveArray::new(buffer![5i32, 6i32, 7i32], Validity::AllValid).into_array(),
                 ),
                 (
-                    "max_is_truncated",
-                    BoolArray::from_iter([false, false, false]).into_array(),
-                ),
-                (
                     "min",
                     PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::AllValid).into_array(),
-                ),
-                (
-                    "min_is_truncated",
-                    BoolArray::from_iter([false, false, false]).into_array(),
                 ),
             ])
             .unwrap(),

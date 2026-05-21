@@ -9,11 +9,9 @@ use std::sync::Arc;
 use itertools::Itertools;
 use vortex_array::ArrayRef;
 use vortex_array::ExecutionCtx;
-use vortex_array::IntoArray;
 use vortex_array::LEGACY_SESSION;
 use vortex_array::VortexSessionExecute;
 use vortex_array::aggregate_fn::fns::sum::sum;
-use vortex_array::arrays::ConstantArray;
 use vortex_array::arrays::StructArray;
 use vortex_array::arrays::struct_::StructArrayExt;
 use vortex_array::builders::ArrayBuilder;
@@ -263,20 +261,12 @@ impl StatsArrayBuilder for StatNameArrayBuilder {
 
     fn finish(&mut self) -> NamedArrays {
         let array = self.builder.finish();
-        let len = array.len();
-        match self.stat {
-            Stat::Max => NamedArrays {
-                names: vec![self.stat.name().into(), MAX_IS_TRUNCATED.into()],
-                arrays: vec![array, ConstantArray::new(false, len).into_array()],
-            },
-            Stat::Min => NamedArrays {
-                names: vec![self.stat.name().into(), MIN_IS_TRUNCATED.into()],
-                arrays: vec![array, ConstantArray::new(false, len).into_array()],
-            },
-            _ => NamedArrays {
-                names: vec![self.stat.name().into()],
-                arrays: vec![array],
-            },
+        // Non-string/binary stats never truncate their min/max values, so no
+        // is_truncated column is emitted.  Only TruncatedMax/MinBinaryStatsBuilder
+        // (used for Utf8 and Binary dtypes) appends truncation flags.
+        NamedArrays {
+            names: vec![self.stat.name().into()],
+            arrays: vec![array],
         }
     }
 }
@@ -460,35 +450,46 @@ mod tests {
         );
     }
 
+    // Replaces the old `always_adds_is_truncated_column` test, which codified the
+    // wrong behavior (ABA-13).  Primitive columns must NOT carry truncation flags.
     #[test]
-    fn always_adds_is_truncated_column() {
+    fn primitive_stats_do_not_include_truncation_columns() -> VortexResult<()> {
         let mut ctx = LEGACY_SESSION.create_execution_ctx();
         let array = buffer![0, 1, 2].into_array();
         let mut acc = StatsAccumulator::new(array.dtype(), &[Stat::Max, Stat::Min, Stat::Sum], 12);
         acc.push_chunk(&array, &mut ctx)
             .vortex_expect("push_chunk should succeed for test array");
-        let (stats_table, _) = acc.as_array().unwrap().expect("Must have stats table");
+        let (stats_table, _) = acc.as_array()?.expect("Must have stats table");
         assert_eq!(
             stats_table.names().as_ref(),
-            &[
-                Stat::Max.name(),
-                MAX_IS_TRUNCATED,
-                Stat::Min.name(),
-                MIN_IS_TRUNCATED,
-                Stat::Sum.name(),
-            ]
+            &[Stat::Max.name(), Stat::Min.name(), Stat::Sum.name(),]
         );
-        let field1_bool = stats_table
-            .unmasked_field(1)
-            .clone()
-            .execute::<BoolArray>(&mut ctx)
-            .unwrap();
-        assert_eq!(field1_bool.to_bit_buffer(), BitBuffer::from(vec![false]));
-        let field3_bool = stats_table
-            .unmasked_field(3)
-            .clone()
-            .execute::<BoolArray>(&mut ctx)
-            .unwrap();
-        assert_eq!(field3_bool.to_bit_buffer(), BitBuffer::from(vec![false]));
+        Ok(())
+    }
+
+    // ABA-13: is_truncated columns must NOT appear for non-string/binary dtypes.
+    #[test]
+    fn issue_aba13_zonemap_skips_is_truncated_for_non_string() -> VortexResult<()> {
+        let mut ctx = LEGACY_SESSION.create_execution_ctx();
+        let array = buffer![0i64, 1, 2].into_array();
+        let mut acc = StatsAccumulator::new(array.dtype(), &[Stat::Max, Stat::Min, Stat::Sum], 12);
+        acc.push_chunk(&array, &mut ctx)
+            .vortex_expect("push_chunk should succeed for test array");
+        let (stats_table, _) = acc.as_array()?.expect("Must have stats table");
+        let names = stats_table.names();
+        assert!(
+            !names.as_ref().contains(&MAX_IS_TRUNCATED.into()),
+            "i64 column must not have {MAX_IS_TRUNCATED} in stats schema, got: {names:?}",
+        );
+        assert!(
+            !names.as_ref().contains(&MIN_IS_TRUNCATED.into()),
+            "i64 column must not have {MIN_IS_TRUNCATED} in stats schema, got: {names:?}",
+        );
+        assert_eq!(
+            names.as_ref(),
+            &[Stat::Max.name(), Stat::Min.name(), Stat::Sum.name()],
+            "i64 stats schema must be exactly [max, min, sum] without truncation flags",
+        );
+        Ok(())
     }
 }

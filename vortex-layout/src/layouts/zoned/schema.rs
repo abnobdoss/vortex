@@ -31,16 +31,22 @@ pub(crate) fn stats_table_dtype(column_dtype: &DType, present_stats: &[Stat]) ->
                         })
                         .map(|dtype| (stat, dtype.as_nullable()))
                 })
-                .flat_map(|(stat, dtype)| match stat {
-                    Stat::Max => vec![
-                        (stat.name(), dtype),
-                        (MAX_IS_TRUNCATED, DType::Bool(Nullability::NonNullable)),
-                    ],
-                    Stat::Min => vec![
-                        (stat.name(), dtype),
-                        (MIN_IS_TRUNCATED, DType::Bool(Nullability::NonNullable)),
-                    ],
-                    _ => vec![(stat.name(), dtype)],
+                .flat_map(|(stat, dtype)| {
+                    // Truncation flags are only meaningful for variable-length string/binary
+                    // min/max values, where the stored bound may be shorter than the actual
+                    // value. Numeric and other fixed-width types are never truncated.
+                    let is_string_or_binary = matches!(dtype, DType::Utf8(_) | DType::Binary(_));
+                    match stat {
+                        Stat::Max if is_string_or_binary => vec![
+                            (stat.name(), dtype),
+                            (MAX_IS_TRUNCATED, DType::Bool(Nullability::NonNullable)),
+                        ],
+                        Stat::Min if is_string_or_binary => vec![
+                            (stat.name(), dtype),
+                            (MIN_IS_TRUNCATED, DType::Bool(Nullability::NonNullable)),
+                        ],
+                        _ => vec![(stat.name(), dtype)],
+                    }
                 }),
         ),
         Nullability::NonNullable,
@@ -57,11 +63,26 @@ mod tests {
 
     use super::*;
 
+    // Previously documented the wrong behavior (ABA-13): I32 does not need
+    // truncation flags because integer min/max values are never truncated.
     #[test]
-    fn stats_table_dtype_adds_truncation_flags() {
+    fn stats_table_dtype_no_truncation_flags_for_primitive() {
         let dtype = stats_table_dtype(
             &DType::Primitive(PType::I32, Nullability::NonNullable),
             &[Stat::Max, Stat::Min, Stat::Sum],
+        );
+
+        assert_eq!(
+            dtype.as_struct_fields().names().as_ref(),
+            &[Stat::Max.name(), Stat::Min.name(), Stat::Sum.name(),]
+        );
+    }
+
+    #[test]
+    fn stats_table_dtype_adds_truncation_flags_for_string() {
+        let dtype = stats_table_dtype(
+            &DType::Utf8(Nullability::NonNullable),
+            &[Stat::Max, Stat::Min],
         );
 
         assert_eq!(
@@ -71,11 +92,12 @@ mod tests {
                 MAX_IS_TRUNCATED,
                 Stat::Min.name(),
                 MIN_IS_TRUNCATED,
-                Stat::Sum.name(),
             ]
         );
     }
 
+    // Extension types backed by a non-string storage dtype (e.g. Date → i32)
+    // should also not carry truncation flags.
     #[test]
     fn stats_table_dtype_uses_storage_dtype_for_extensions() {
         let dtype = DType::Extension(Date::new(TimeUnit::Days, Nullability::NonNullable).erased());
@@ -83,12 +105,7 @@ mod tests {
 
         assert_eq!(
             stats_dtype.as_struct_fields().names().as_ref(),
-            &[
-                Stat::Max.name(),
-                MAX_IS_TRUNCATED,
-                Stat::Min.name(),
-                MIN_IS_TRUNCATED,
-            ]
+            &[Stat::Max.name(), Stat::Min.name(),]
         );
     }
 }
