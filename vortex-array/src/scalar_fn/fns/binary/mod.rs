@@ -609,4 +609,39 @@ mod tests {
         let rhs2 = ConstantArray::new(Scalar::from(f32::MAX), 3).into_array();
         let _results = values.binary(rhs2, Operator::Sub).unwrap();
     }
+
+    /// Repro for ABA-24: same-scale DecimalArray addition is rejected at `Binary::return_dtype`
+    /// because `DType::Decimal` is not `is_primitive()`, so the arithmetic gate rejects it before
+    /// any kernel runs. This is a feature gap: there is no decimal arithmetic kernel in
+    /// `scalar_fn::fns`.
+    ///
+    /// See: <https://linear.app/abanoubdoss/issue/ABA-24>
+    #[test]
+    #[ignore = "demonstrates ABA-24; see https://linear.app/abanoubdoss/issue/ABA-24"]
+    fn issue_aba24_decimal_array_add_same_scale_must_succeed() -> VortexResult<()> {
+        use vortex_buffer::buffer;
+
+        use crate::IntoArray;
+        use crate::arrays::DecimalArray;
+        use crate::dtype::DType;
+        use crate::dtype::DecimalDType;
+        use crate::validity::Validity;
+
+        // 12.34 + 0.01 in Decimal(5,2) — same precision, same scale, no nulls.
+        // Expected result: 12.35 (raw = 1235), dtype unchanged.
+        let decimal_dtype = DecimalDType::new(5, 2);
+        let lhs =
+            DecimalArray::new(buffer![1234i32], decimal_dtype, Validity::NonNullable).into_array();
+        let rhs =
+            DecimalArray::new(buffer![1i32], decimal_dtype, Validity::NonNullable).into_array();
+
+        let result = lhs.binary(rhs, Operator::Add)?;
+
+        assert!(
+            matches!(result.dtype(), DType::Decimal(..)),
+            "expected DType::Decimal output from decimal + decimal, got {:?}",
+            result.dtype(),
+        );
+        Ok(())
+    }
 }
