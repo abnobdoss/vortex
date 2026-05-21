@@ -6,7 +6,10 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+use num_traits::CheckedDiv;
+use num_traits::CheckedMul;
 use num_traits::ToPrimitive as NumToPrimitive;
+use vortex_error::VortexExpect;
 use vortex_error::VortexResult;
 use vortex_error::vortex_bail;
 use vortex_error::vortex_err;
@@ -14,7 +17,10 @@ use vortex_error::vortex_panic;
 
 use crate::dtype::DType;
 use crate::dtype::DecimalDType;
+use crate::dtype::DecimalType;
 use crate::dtype::PType;
+use crate::dtype::ToI256;
+use crate::dtype::i256;
 use crate::match_each_decimal_value;
 use crate::scalar::DecimalValue;
 use crate::scalar::NumericOperator;
@@ -78,14 +84,20 @@ impl<'a> DecimalScalar<'a> {
                     );
                 }
 
-                // TODO(connor): Implement proper decimal scaling logic - whatever that means???
-                // Different precision/scale - need to implement scaling logic
-                // For now, we'll do a simple value preservation without scaling
-                if let Some(value) = &self.decimal_value {
-                    Ok(Scalar::decimal(*value, *target_dtype, *target_nullability))
-                } else {
-                    Ok(Scalar::null(dtype.clone()))
-                }
+                // Different precision/scale - rescale the underlying coefficient so
+                // the numeric value is preserved, then verify it fits within the
+                // target precision. Scale grows multiply the raw integer by
+                // 10^delta; scale shrinks divide (truncating toward zero).
+                let Some(value) = self.decimal_value else {
+                    return Ok(Scalar::null(dtype.clone()));
+                };
+
+                let rescaled = rescale_decimal_value(value, self.decimal_type, *target_dtype)?;
+                Ok(Scalar::decimal(
+                    rescaled,
+                    *target_dtype,
+                    *target_nullability,
+                ))
             }
             DType::Primitive(ptype, nullability) => {
                 // Cast decimal to primitive type
@@ -247,6 +259,102 @@ impl<'a> DecimalScalar<'a> {
             decimal_value: result_value,
         })
     }
+}
+
+/// Rescale a [`DecimalValue`] from `from_dtype` to `to_dtype`, preserving the
+/// numeric value.
+///
+/// For a target scale greater than the source scale, the raw integer is
+/// multiplied by `10^(to_scale - from_scale)`. For a smaller target scale the
+/// raw integer is integer-divided (truncating toward zero) by `10^|delta|`.
+///
+/// The intermediate computation is performed in [`i256`] to avoid overflow on
+/// the multiplication. The resulting value must fit within the target dtype's
+/// precision; if it does not, an overflow error is returned. This matches the
+/// SQL-standard requirement that a value which cannot be represented under the
+/// target precision and scale raises `numeric_value_out_of_range`.
+///
+/// The returned [`DecimalValue`] is stored in the smallest variant that can
+/// represent any value valid for `to_dtype`'s precision.
+fn rescale_decimal_value(
+    value: DecimalValue,
+    from_dtype: DecimalDType,
+    to_dtype: DecimalDType,
+) -> VortexResult<DecimalValue> {
+    let value_i256 = match_each_decimal_value!(&value, |v| {
+        v.to_i256()
+            .vortex_expect("upcast to i256 must always succeed")
+    });
+
+    let from_scale = from_dtype.scale() as i32;
+    let to_scale = to_dtype.scale() as i32;
+    let delta = to_scale - from_scale;
+
+    let rescaled_i256 = if delta == 0 {
+        value_i256
+    } else {
+        let abs_delta = delta.unsigned_abs();
+        let factor = i256::from_i128(10)
+            .checked_pow(abs_delta)
+            .ok_or_else(|| vortex_err!("decimal scale factor 10^{abs_delta} overflows i256"))?;
+        if delta > 0 {
+            value_i256.checked_mul(&factor).ok_or_else(|| {
+                vortex_err!(
+                    "decimal rescale from {from_dtype} to {to_dtype} overflows: \
+                     multiplying raw value by 10^{abs_delta} does not fit"
+                )
+            })?
+        } else {
+            // Truncating integer division toward zero (i256::checked_div); this
+            // drops digits below the target scale.
+            value_i256
+                .checked_div(&factor)
+                .vortex_expect("division by non-zero 10^delta cannot fail")
+        }
+    };
+
+    if !DecimalValue::I256(rescaled_i256).fits_in_precision(to_dtype) {
+        vortex_bail!(
+            "decimal value does not fit in target precision when casting from {from_dtype} to {to_dtype}"
+        );
+    }
+
+    // Downcast to the smallest variant that the target dtype's precision requires.
+    let target_storage = DecimalType::smallest_decimal_value_type(&to_dtype);
+    let rescaled = match target_storage {
+        DecimalType::I8 => DecimalValue::I8(
+            rescaled_i256
+                .to_i128()
+                .and_then(|v| i8::try_from(v).ok())
+                .vortex_expect("value fits in precision so it fits in i8 storage"),
+        ),
+        DecimalType::I16 => DecimalValue::I16(
+            rescaled_i256
+                .to_i128()
+                .and_then(|v| i16::try_from(v).ok())
+                .vortex_expect("value fits in precision so it fits in i16 storage"),
+        ),
+        DecimalType::I32 => DecimalValue::I32(
+            rescaled_i256
+                .to_i128()
+                .and_then(|v| i32::try_from(v).ok())
+                .vortex_expect("value fits in precision so it fits in i32 storage"),
+        ),
+        DecimalType::I64 => DecimalValue::I64(
+            rescaled_i256
+                .to_i128()
+                .and_then(|v| i64::try_from(v).ok())
+                .vortex_expect("value fits in precision so it fits in i64 storage"),
+        ),
+        DecimalType::I128 => DecimalValue::I128(
+            rescaled_i256
+                .to_i128()
+                .vortex_expect("value fits in precision so it fits in i128 storage"),
+        ),
+        DecimalType::I256 => DecimalValue::I256(rescaled_i256),
+    };
+
+    Ok(rescaled)
 }
 
 impl PartialEq for DecimalScalar<'_> {

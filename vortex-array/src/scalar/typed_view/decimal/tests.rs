@@ -108,14 +108,16 @@ fn test_decimal_cast_overflow() {
 
 #[test]
 fn test_decimal_cast_between_decimal_types() {
-    // Decimal with different precision/scale
+    // 123.45 stored as raw 12345 at scale 2.
     let decimal_scalar = Scalar::decimal(
         DecimalValue::I32(12345),
         DecimalDType::new(10, 2),
         Nullability::NonNullable,
     );
 
-    // Cast to different decimal type (currently just preserves value)
+    // Cast to Decimal(20, 4): scale grows from 2 to 4 so the raw integer is
+    // multiplied by 10^(4-2) = 100 to preserve the numeric value 123.45.
+    // Precision 20 requires i128 storage (smallest variant for 19..=38).
     let result = decimal_scalar
         .cast(&DType::Decimal(
             DecimalDType::new(20, 4),
@@ -123,9 +125,8 @@ fn test_decimal_cast_between_decimal_types() {
         ))
         .unwrap();
 
-    // Value should be preserved (TODO(connor): proper scaling logic - whatever that means???)
     let decimal_value: Option<DecimalValue> = result.try_into().unwrap();
-    assert_eq!(decimal_value, Some(DecimalValue::I32(12345)));
+    assert_eq!(decimal_value, Some(DecimalValue::I128(1_234_500)));
 }
 
 #[test]
@@ -301,15 +302,16 @@ fn test_decimal_to_decimal_same_type() {
 
 #[test]
 fn test_decimal_to_decimal_different_scale() {
-    // Create a decimal with scale=2
+    // 100.00 stored as raw 10000 at scale 2.
     let decimal = Scalar::decimal(
-        DecimalValue::I32(10000), // Represents 100.00
+        DecimalValue::I32(10000),
         DecimalDType::new(10, 2),
         Nullability::NonNullable,
     );
 
-    // Cast to decimal with scale=4
-    // TODO: This should properly rescale, but for now it preserves the raw value
+    // Cast to scale 4: numeric value 100.00 must be preserved by multiplying
+    // the raw integer by 10^(4-2) = 100, giving raw 1_000_000.
+    // Precision 10 requires i64 storage (smallest variant for 10..=18).
     let target_dtype = DType::Decimal(DecimalDType::new(10, 4), Nullability::NonNullable);
     let result = decimal.cast(&target_dtype);
     assert!(result.is_ok());
@@ -317,7 +319,7 @@ fn test_decimal_to_decimal_different_scale() {
     let casted = result.unwrap();
     assert_eq!(
         casted.as_decimal().decimal_value(),
-        Some(DecimalValue::I32(10000))
+        Some(DecimalValue::I64(1_000_000))
     );
 }
 
