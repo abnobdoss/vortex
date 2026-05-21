@@ -1187,3 +1187,82 @@ fn test_fits_in_precision_mixed_decimal_value_types() {
     assert!(DecimalValue::I128(99999).fits_in_precision(dtype));
     assert!(!DecimalValue::I256(i256::from_i128(100000)).fits_in_precision(dtype));
 }
+
+/// Regression test for ABA-26: decimal scalar mul/div must apply scale compensation.
+///
+/// Decimal values at scale S store their raw integer as `value * 10^S`. Operations must
+/// compensate for scale so that the logical value is preserved:
+///   mul: result_raw = (a_raw * b_raw) / 10^S
+///   div: result_raw = (a_raw * 10^S) / b_raw
+#[test]
+fn issue_aba26_decimal_scalar_mul_div_compensate_scale() {
+    use crate::scalar::NumericOperator;
+
+    // All tests use scale=1: raw integers represent value * 10.
+
+    // 1.0 * 1.0 = 1.0  (raw: 10 * 10 / 10 = 10)
+    let a = Scalar::decimal(
+        DecimalValue::I32(10), // 1.0
+        DecimalDType::new(10, 1),
+        Nullability::NonNullable,
+    );
+    let b = Scalar::decimal(
+        DecimalValue::I32(10), // 1.0
+        DecimalDType::new(10, 1),
+        Nullability::NonNullable,
+    );
+    let result = a
+        .as_decimal()
+        .checked_binary_numeric(&b.as_decimal(), NumericOperator::Mul)
+        .expect("1.0 * 1.0 should not overflow");
+    // Expected raw = 10 (represents 1.0 at scale=1); buggy code gives 100 (represents 10.0).
+    assert_eq!(
+        result.decimal_value(),
+        Some(DecimalValue::I256(i256::from_i128(10))),
+        "1.0 * 1.0 at scale=1 should yield raw 10 (=1.0), not 100 (=10.0)"
+    );
+
+    // 2.5 * 4.0 = 10.0  (raw: 25 * 40 / 10 = 100)
+    let a = Scalar::decimal(
+        DecimalValue::I32(25), // 2.5
+        DecimalDType::new(10, 1),
+        Nullability::NonNullable,
+    );
+    let b = Scalar::decimal(
+        DecimalValue::I32(40), // 4.0
+        DecimalDType::new(10, 1),
+        Nullability::NonNullable,
+    );
+    let result = a
+        .as_decimal()
+        .checked_binary_numeric(&b.as_decimal(), NumericOperator::Mul)
+        .expect("2.5 * 4.0 should not overflow");
+    // Expected raw = 100 (represents 10.0 at scale=1); buggy code gives 1000 (represents 100.0).
+    assert_eq!(
+        result.decimal_value(),
+        Some(DecimalValue::I256(i256::from_i128(100))),
+        "2.5 * 4.0 at scale=1 should yield raw 100 (=10.0), not 1000 (=100.0)"
+    );
+
+    // 10.0 / 2.0 = 5.0  (raw: 100 * 10 / 20 = 50)
+    let a = Scalar::decimal(
+        DecimalValue::I32(100), // 10.0
+        DecimalDType::new(10, 1),
+        Nullability::NonNullable,
+    );
+    let b = Scalar::decimal(
+        DecimalValue::I32(20), // 2.0
+        DecimalDType::new(10, 1),
+        Nullability::NonNullable,
+    );
+    let result = a
+        .as_decimal()
+        .checked_binary_numeric(&b.as_decimal(), NumericOperator::Div)
+        .expect("10.0 / 2.0 should not overflow");
+    // Expected raw = 50 (represents 5.0 at scale=1); buggy code gives 5 (represents 0.5).
+    assert_eq!(
+        result.decimal_value(),
+        Some(DecimalValue::I256(i256::from_i128(50))),
+        "10.0 / 2.0 at scale=1 should yield raw 50 (=5.0), not 5 (=0.5)"
+    );
+}
