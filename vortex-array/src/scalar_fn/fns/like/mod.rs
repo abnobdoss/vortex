@@ -364,4 +364,29 @@ mod tests {
         );
         assert_eq!(None, ilike(col("a"), lit("a")).stat_falsification(&catalog));
     }
+
+    /// [ABA-32] `LikeOptions` has no `escape_char` field, so SQL LIKE … ESCAPE is
+    /// unrepresentable in Vortex's expression layer.
+    ///
+    /// The fix requires adding `escape_char: Option<char>` (or equivalent) to
+    /// `LikeOptions` and threading it through serialization, the kernel, and every
+    /// encoding fast-path.
+    ///
+    /// This test fails on develop because `format!("{:?}", opts)` produces a string
+    /// that does NOT contain "escape_char", proving the field is absent.
+    #[ignore = "demonstrates ABA-32; see https://linear.app/abanoubdoss/issue/ABA-32"]
+    #[test]
+    fn issue_aba32_like_options_supports_escape_char() {
+        use crate::scalar_fn::fns::like::LikeOptions;
+
+        let opts = LikeOptions::default();
+        let debug_repr = format!("{opts:?}");
+        // After the fix `LikeOptions` will have an `escape_char` field; its Debug
+        // output will contain the substring "escape_char".  On develop the struct
+        // only has `negated` and `case_insensitive`, so this assertion fails.
+        assert!(
+            debug_repr.contains("escape_char"),
+            "LikeOptions is missing `escape_char` field (ABA-32): got {debug_repr:?}"
+        );
+    }
 }
